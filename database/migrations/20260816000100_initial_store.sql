@@ -1,3 +1,4 @@
+-- Banco PostgreSQL independente usado pela cópia da loja no Netlify.
 CREATE TABLE store_config (
   id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   store_name TEXT NOT NULL DEFAULT 'Geladinhos Gourmet',

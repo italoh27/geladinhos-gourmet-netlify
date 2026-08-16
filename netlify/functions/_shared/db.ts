@@ -1,6 +1,18 @@
-import { getDatabase } from "@netlify/database";
+import { Pool } from "pg";
 
-const database = getDatabase();
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+  throw new Error("DATABASE_URL não configurada.");
+}
+
+const pool = new Pool({
+  connectionString,
+  max: 5,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 10_000,
+  allowExitOnIdle: true,
+});
 
 export type DbRow = Record<string, unknown>;
 export type DbResult<T extends DbRow = DbRow> = { rows: T[]; rowCount: number | null };
@@ -9,14 +21,12 @@ export type DbClient = {
   release?: () => void;
 };
 
-const pool = database.pool as unknown as DbClient & { connect(): Promise<DbClient> };
-
 export async function query<T extends DbRow = DbRow>(text: string, values: unknown[] = []) {
   return pool.query<T>(text, values);
 }
 
 export async function transaction<T>(work: (client: DbClient) => Promise<T>): Promise<T> {
-  const client = await pool.connect();
+  const client = (await pool.connect()) as unknown as DbClient;
   try {
     await client.query("BEGIN");
     const result = await work(client);

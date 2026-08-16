@@ -34,6 +34,7 @@ Copie os nomes de `.env.example` para **Project configuration > Environment vari
 
 - `ADMIN_PASSWORD`: senha forte do painel;
 - `SESSION_SECRET`: chave aleatória com pelo menos 24 caracteres;
+- `DATABASE_URL`: conexão privada do banco PostgreSQL separado no Neon;
 - `INFINITEPAY_HANDLE`: identificador da conta InfinitePay;
 - `PUBLIC_SITE_URL`: URL final do site no Netlify;
 - `RESEND_API_KEY` e `EMAIL_FROM`: envio do código de recuperação de senha;
@@ -45,8 +46,8 @@ Nunca publique valores reais no repositório.
 1. Crie um repositório separado no GitHub para esta cópia.
 2. Importe esse repositório no Netlify.
 3. O `netlify.toml` já define `pnpm build`, diretório `dist` e as Functions.
-4. O Netlify Database detecta e aplica automaticamente a migração em `netlify/database/migrations` durante o deploy.
-5. Cadastre as variáveis acima e faça um novo deploy.
+4. Crie um banco PostgreSQL no Neon e execute `database/migrations/20260816000100_initial_store.sql` uma vez no SQL Editor.
+5. Cadastre as variáveis acima, mantendo `DATABASE_URL` como segredo, e faça um novo deploy.
 6. Abra o painel em `/admin/login`, configure WhatsApp, estoque, entrega, pagamentos e a abertura da loja.
 
 ## Verificação
