@@ -1,0 +1,55 @@
+import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { Loading, Notice } from "../components/Loading";
+import { QuantityControl } from "../components/QuantityControl";
+import { currency } from "../lib/api";
+import { useCart } from "../lib/cart";
+import { useStore } from "../lib/store";
+
+export function StorePage() {
+  const { config, flavors, loading, error } = useStore();
+  const cart = useCart();
+  const [quantities, setQuantities] = useState<Record<number, number>>({});
+  const cartById = useMemo(() => new Map(cart.items.map((item) => [item.id, item.quantity])), [cart.items]);
+
+  if (loading) return <Loading label="Abrindo a loja" />;
+  return (
+    <section className="store-page page-stack">
+      <header className="hero glass-card">
+        <span className={`store-status ${config.open ? "open" : "closed"}`}>{config.open ? "Loja aberta" : "Loja fechada"}</span>
+        <h1>GELADINHOS GOURMET</h1>
+        <p>Escolha seus sabores favoritos e acompanhe tudo pelo celular.</p>
+      </header>
+      {error && <Notice kind="error">{error}</Notice>}
+      {!config.open && <Notice>Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir.</Notice>}
+      <div className="section-title"><div><span>Cardápio</span><h2>Sabores disponíveis</h2></div><b>{flavors.filter((flavor) => flavor.stock > 0).length} sabores</b></div>
+      <div className="flavor-grid" aria-label="Sabores disponíveis">
+        {flavors.map((flavor) => {
+          const inCart = cartById.get(flavor.id) || 0;
+          const personalAvailable = Math.max(0, flavor.stock - inCart);
+          const selected = Math.min(quantities[flavor.id] || 1, personalAvailable || 1);
+          return (
+            <article className="flavor-card glass-card" key={flavor.id}>
+              <img src={flavor.imageUrl} alt={`Geladinho gourmet sabor ${flavor.name}`} loading="lazy" width="420" height="420" />
+              <div className="flavor-copy">
+                <h3>{flavor.name}</h3>
+                <strong>{currency(flavor.price)}</strong>
+                <p className={personalAvailable ? "stock-ok" : "stock-out"}>{personalAvailable ? `${personalAvailable} unidade(s) disponível(is)` : "Esgotado para seu carrinho"}</p>
+              </div>
+              <div className="flavor-actions">
+                <span>Quantidade</span>
+                <QuantityControl value={selected} min={personalAvailable ? 1 : 0} max={personalAvailable} onChange={(value) => setQuantities((current) => ({ ...current, [flavor.id]: value }))} />
+                <button type="button" className="primary-button" disabled={!config.open || !personalAvailable} onClick={() => {
+                  cart.add(flavor, selected);
+                  setQuantities((current) => ({ ...current, [flavor.id]: 1 }));
+                }}>Adicionar ao carrinho</button>
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      {cart.count > 0 && <Link className="mobile-checkout-bar" to="/carrinho"><span>{cart.count} item(ns)</span><strong>Ver carrinho · {currency(cart.total)}</strong></Link>}
+    </section>
+  );
+}
+
