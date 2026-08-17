@@ -45,16 +45,16 @@ export function OrderPage() {
   return (
     <section className="order-page narrow-page page-stack">
       {paid && <div className="thank-you glass-card"><span>✓</span><div><h1>Obrigado pelo seu pedido, {order.customer.name}!</h1></div></div>}
-      {order.stockConflict && <Notice kind="error">Seu pagamento foi confirmado depois que a reserva venceu e um item ficou sem estoque. Fale com a loja para receber uma substituição ou reembolso.</Notice>}
+      {order.stockConflict && <Notice kind="error">O pagamento foi confirmado, mas um item acabou antes da confirmação. Fale com a loja para receber uma substituição ou reembolso.</Notice>}
       {!paid && waitingPayment && (
         <div className="payment-reference glass-card">
           <span>Referência do pedido</span><h1>#{order.id}</h1>
           {order.paymentLink && <a className="primary-button" href={order.paymentLink}>Pagar com a InfinitePay</a>}
           {config.manualPixActive && config.pix && <div className="manual-pix"><strong>Ou pague por Pix</strong><span>Chave: {config.pix.key}</span>{config.pix.name && <span>Nome: {config.pix.name}</span>}{config.pix.bank && <span>Banco: {config.pix.bank}</span>}</div>}
-          {order.paymentLink && <p>A confirmação pela InfinitePay é automática. O estoque fica reservado por 15 minutos.</p>}
+          {order.paymentLink && <p>A confirmação pela InfinitePay é automática. O estoque será atualizado somente após o pagamento.</p>}
         </div>
       )}
-      {!paid && finished && <Notice kind="error">Pagamento cancelado ou expirado. Os itens foram devolvidos ao estoque.</Notice>}
+      {!paid && finished && <Notice kind="error">Pagamento cancelado ou expirado. Nenhum item foi retirado do estoque.</Notice>}
       <article className="order-summary glass-card">
         <div className="section-title"><div><span>Pedido #{order.id}</span><h2>{visibleStatus}</h2></div><b className={`badge badge-${order.paymentStatus}`}>{paid ? "Pago" : order.paymentStatus.replaceAll("_", " ")}</b></div>
         <p className="muted">Criado em {dateTime(order.createdAt)}</p>

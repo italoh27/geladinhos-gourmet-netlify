@@ -3,7 +3,7 @@ import { randomBytes, randomInt, createHash } from "node:crypto";
 import { body, cleanText, HttpError, json, money, noContent, normalizeEmail, normalizePhone, only, positiveInt, safeError } from "./_shared/http";
 import { clearSessionCookie, createSession, deleteSession, getSession, hashPassword, requireAdmin, requireCustomer, verifyPassword } from "./_shared/auth";
 import { query, transaction } from "./_shared/db";
-import { getOrder, releaseExpiredReservations, returnStock } from "./_shared/orders";
+import { commitStock, getOrder, releaseExpiredReservations, releaseStock, returnStock } from "./_shared/orders";
 import { applyInfinitePayStatus, checkInfinitePay, createInfinitePayCheckout, infinitePayEnabled } from "./_shared/payment";
 import { recoveryEmailEnabled, sendPasswordResetCode } from "./_shared/email";
 import { deliverLoyaltyReward, processOrderLoyalty, reverseOrderLoyalty, setLoyaltyProgress } from "./_shared/loyalty";
@@ -67,6 +67,8 @@ async function storeConfig(client?: { query: typeof query }) {
 }
 
 function publicConfig(config: StoreConfig) {
+  const whatsappDigits = String(config.whatsapp_number || "").replace(/\D/g, "");
+  const whatsappNumber = whatsappDigits.length === 10 || whatsappDigits.length === 11 ? `55${whatsappDigits}` : whatsappDigits;
   return {
     storeName: config.store_name,
     open: config.store_open,
@@ -80,7 +82,7 @@ function publicConfig(config: StoreConfig) {
     deliveryEnabled: config.delivery_enabled,
     freeDelivery: config.free_delivery,
     deliveryFee: config.free_delivery ? 0 : Number(config.delivery_fee),
-    whatsappNumber: config.whatsapp_number,
+    whatsappNumber,
     pix: config.manual_pix_active ? { key: config.pix_key, name: config.pix_name, bank: config.pix_bank } : null,
   };
 }
@@ -146,7 +148,8 @@ async function canViewOrder(request: Request, order: Record<string, unknown>) {
 async function whatsappForOrder(order: Record<string, unknown>) {
   const config = await storeConfig();
   if (String(order.payment_status) !== "pago" && config.payment_before_order) return "";
-  const number = String(config.whatsapp_number || "").replace(/\D/g, "");
+  const digits = String(config.whatsapp_number || "").replace(/\D/g, "");
+  const number = digits.length === 10 || digits.length === 11 ? `55${digits}` : digits;
   if (!number) return "";
   const normalized = normalizeOrder(order)!;
   const lines = normalized.items.map((item: { quantity: number; name: string }) => `• ${item.quantity}x ${item.name}`);
@@ -421,20 +424,18 @@ async function handleCheckout(request: Request) {
     const created = await client.query<{ id: number }>(
       `INSERT INTO orders (
         public_token,customer_id,customer_name,customer_phone,customer_email,postal_code,street,number,neighborhood,city,
-        complement,reference,subtotal,delivery_fee,total,visible_to_admin,reservation_expires_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
-        CASE WHEN $17 THEN NOW() + INTERVAL '15 minutes' ELSE NULL END) RETURNING id`,
+        complement,reference,subtotal,delivery_fee,total,visible_to_admin,stock_returned,reservation_expires_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,TRUE,NULL) RETURNING id`,
       [
         publicToken, session?.customer_id || null, customerName, customerPhone, customerEmail,
         postalCode, street, number, neighborhood, city, cleanText(address.complement, 150), cleanText(address.reference, 150),
-        subtotalCents / 100, deliveryFee, subtotalCents / 100 + deliveryFee, visible, onlinePayment,
+        subtotalCents / 100, deliveryFee, subtotalCents / 100 + deliveryFee, visible,
       ],
     );
     const id = Number(created.rows[0].id);
     for (const flavor of selected.rows) {
       const quantity = grouped.get(Number(flavor.id)) || 0;
       const unitPrice = Number(flavor.price);
-      await client.query("UPDATE flavors SET stock = stock - $2, updated_at = NOW() WHERE id = $1", [flavor.id, quantity]);
       await client.query(
         "INSERT INTO order_items (order_id,flavor_id,flavor_name,unit_price,quantity,line_total) VALUES ($1,$2,$3,$4,$5,$6)",
         [id, flavor.id, flavor.name, unitPrice, quantity, unitPrice * quantity],
@@ -583,14 +584,16 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
     const current = await client.query<{ status: string; payment_status: string; loyalty_counted: boolean; stock_returned: boolean; subtotal: number; delivery_fee: number }>("SELECT status,payment_status,loyalty_counted,stock_returned,subtotal::FLOAT,delivery_fee::FLOAT FROM orders WHERE id=$1 FOR UPDATE", [orderId]);
     if (!current.rows[0]) throw new HttpError(404, "Pedido não encontrado.");
     if (data.items) {
-      if (current.rows[0].status === "cancelado" || current.rows[0].stock_returned) throw new HttpError(409, "Reabra o pedido antes de editar seus itens.");
+      if (current.rows[0].status === "cancelado") throw new HttpError(409, "Reabra o pedido antes de editar seus itens.");
       if (!data.items.length) throw new HttpError(400, "O pedido precisa ter pelo menos um item.");
       if (current.rows[0].loyalty_counted) await reverseOrderLoyalty(client, orderId);
-      await client.query(
-        `UPDATE flavors f SET stock=f.stock+i.quantity,updated_at=NOW()
-         FROM order_items i WHERE i.order_id=$1 AND i.flavor_id=f.id`,
-        [orderId],
-      );
+      if (!current.rows[0].stock_returned) {
+        await client.query(
+          `UPDATE flavors f SET stock=f.stock+i.quantity,updated_at=NOW()
+           FROM order_items i WHERE i.order_id=$1 AND i.flavor_id=f.id`,
+          [orderId],
+        );
+      }
       const grouped = new Map<number, number>();
       for (const item of data.items) grouped.set(positiveInt(item.flavorId, "Sabor"), (grouped.get(Number(item.flavorId)) || 0) + positiveInt(item.quantity));
       const selected = await client.query<{ id: number; name: string; price: string; stock: number; active: boolean }>(
@@ -607,7 +610,9 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
       await client.query("DELETE FROM order_items WHERE order_id=$1", [orderId]);
       for (const flavor of selected.rows) {
         const quantity = grouped.get(Number(flavor.id)) || 0;
-        await client.query("UPDATE flavors SET stock=stock-$2,updated_at=NOW() WHERE id=$1", [flavor.id, quantity]);
+        if (!current.rows[0].stock_returned) {
+          await client.query("UPDATE flavors SET stock=stock-$2,updated_at=NOW() WHERE id=$1", [flavor.id, quantity]);
+        }
         await client.query(
           "INSERT INTO order_items (order_id,flavor_id,flavor_name,unit_price,quantity,line_total) VALUES ($1,$2,$3,$4,$5,$6)",
           [orderId, flavor.id, flavor.name, Number(flavor.price), quantity, Number(flavor.price) * quantity],
@@ -619,20 +624,31 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
       const fee = money(data.deliveryFee);
       await client.query("UPDATE orders SET delivery_fee=$2,total=subtotal+$2,updated_at=NOW() WHERE id=$1", [orderId, fee]);
     }
+    if (data.status === "cancelado" && data.paymentStatus === "pago") {
+      throw new HttpError(400, "Um pedido cancelado não pode ser marcado como pago na mesma ação.");
+    }
     const stopsCounting = data.status === "cancelado" || (data.paymentStatus && data.paymentStatus !== "pago");
     if (stopsCounting && current.rows[0].loyalty_counted) await reverseOrderLoyalty(client, orderId);
-    if (data.status === "cancelado") await returnStock(client, orderId, "cancelado");
+    if (data.status === "cancelado") {
+      await returnStock(client, orderId, "cancelado");
+    } else if (data.paymentStatus === "pago") {
+      const committed = await commitStock(client, orderId);
+      if (!committed) throw new HttpError(409, "Não há estoque suficiente para confirmar este pagamento.");
+    } else if (data.paymentStatus && data.paymentStatus !== "pago") {
+      await releaseStock(client, orderId);
+    }
     await client.query(
       `UPDATE orders SET status=COALESCE($2,status),payment_status=COALESCE($3,payment_status),
-        visible_to_admin=TRUE,paid_at=CASE WHEN $3='pago' THEN COALESCE(paid_at,NOW()) ELSE paid_at END,updated_at=NOW() WHERE id=$1`,
+        visible_to_admin=TRUE,paid_at=CASE WHEN $3='pago' THEN COALESCE(paid_at,NOW()) WHEN $3 IS NOT NULL THEN NULL ELSE paid_at END,
+        updated_at=NOW() WHERE id=$1`,
       [orderId, data.status || null, data.paymentStatus || null],
     );
     if (data.customerName !== undefined || data.customerPhone !== undefined) await client.query(
       "UPDATE orders SET customer_name=COALESCE($2,customer_name),customer_phone=COALESCE($3,customer_phone),updated_at=NOW() WHERE id=$1",
       [orderId, data.customerName === undefined ? null : cleanText(data.customerName, 80), data.customerPhone === undefined ? null : (data.customerPhone ? normalizePhone(data.customerPhone) : "")],
     );
-    const effective = await client.query<{ status: string; payment_status: string }>("SELECT status,payment_status FROM orders WHERE id=$1", [orderId]);
-    if (effective.rows[0]?.payment_status === "pago" && effective.rows[0]?.status !== "cancelado") await processOrderLoyalty(client, orderId);
+    const effective = await client.query<{ status: string; payment_status: string; stock_returned: boolean }>("SELECT status,payment_status,stock_returned FROM orders WHERE id=$1", [orderId]);
+    if (effective.rows[0]?.payment_status === "pago" && effective.rows[0]?.status !== "cancelado" && !effective.rows[0]?.stock_returned) await processOrderLoyalty(client, orderId);
   });
   return json({ order: normalizeOrder((await getOrder(orderId)) as Record<string, unknown>) });
 }
@@ -690,6 +706,9 @@ async function handleAdminConfig(request: Request) {
     pixName: data.pixName === undefined ? current.pix_name : cleanText(data.pixName, 120),
     pixBank: data.pixBank === undefined ? current.pix_bank : cleanText(data.pixBank, 100),
   };
+  if (next.whatsappSupportActive && next.whatsappNumber.length < 10) {
+    throw new HttpError(400, "Informe o WhatsApp da loja com DDD para ativar o Fale conosco.");
+  }
   const result = await query(
     `UPDATE store_config SET store_name=$1,store_open=$2,require_registration=$3,require_address=$4,
       infinitepay_active=$5,payment_before_order=$6,manual_pix_active=$7,whatsapp_support_active=$8,
@@ -773,14 +792,16 @@ async function handleAdminQuickOrder(request: Request) {
     const customer = phone ? await client.query<{ id: number; email: string }>("SELECT id,email FROM customers WHERE phone=$1", [phone]) : { rows: [] };
     const created = await client.query<{ id: number }>(
       `INSERT INTO orders (public_token,customer_id,customer_name,customer_phone,customer_email,status,payment_status,
-        payment_method,subtotal,delivery_fee,total,visible_to_admin,paid_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'pedido_rapido_admin',$8,$9,$10,TRUE,CASE WHEN $7='pago' THEN NOW() ELSE NULL END) RETURNING id`,
+        payment_method,subtotal,delivery_fee,total,visible_to_admin,paid_at,stock_returned)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'pedido_rapido_admin',$8,$9,$10,TRUE,CASE WHEN $7='pago' THEN NOW() ELSE NULL END,$7<>'pago') RETURNING id`,
       [randomBytes(24).toString("base64url"), customer.rows[0]?.id || null, name, phone, customer.rows[0]?.email || "", status, paymentStatus, subtotal, deliveryFee, subtotal + deliveryFee],
     );
     const id = Number(created.rows[0].id);
     for (const flavor of selected.rows) {
       const quantity = grouped.get(Number(flavor.id)) || 0;
-      await client.query("UPDATE flavors SET stock=stock-$2,updated_at=NOW() WHERE id=$1", [flavor.id, quantity]);
+      if (paymentStatus === "pago") {
+        await client.query("UPDATE flavors SET stock=stock-$2,updated_at=NOW() WHERE id=$1", [flavor.id, quantity]);
+      }
       await client.query(
         "INSERT INTO order_items (order_id,flavor_id,flavor_name,unit_price,quantity,line_total) VALUES ($1,$2,$3,$4,$5,$6)",
         [id, flavor.id, flavor.name, Number(flavor.price), quantity, Number(flavor.price) * quantity],

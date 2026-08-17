@@ -1,5 +1,5 @@
 import { query, transaction } from "./db";
-import { getOrder } from "./orders";
+import { commitStock, getOrder } from "./orders";
 import { processOrderLoyalty } from "./loyalty";
 
 type CheckoutOrder = Awaited<ReturnType<typeof getOrder>> & {
@@ -111,7 +111,8 @@ export async function applyInfinitePayStatus(orderId: number, payload: Record<st
     }>("SELECT id, customer_id, payment_status, stock_returned, loyalty_counted,total::FLOAT FROM orders WHERE id = $1 FOR UPDATE", [orderId]);
     const order = result.rows[0];
     if (!order) return false;
-    if (order.payment_status === "pago") return true;
+    if (order.payment_status === "pago" && !order.stock_returned) return true;
+    if (order.payment_status === "pago" && order.stock_returned && !paid) return true;
     const chargedAmount = Number(payload.amount || 0);
     const expectedAmount = Math.round(Number(order.total) * 100);
     if (paid && (!Number.isInteger(chargedAmount) || chargedAmount !== expectedAmount)) {
@@ -126,24 +127,7 @@ export async function applyInfinitePayStatus(orderId: number, payload: Record<st
       if (duplicate.rows[0]) return false;
     }
 
-    let stockReserved = !order.stock_returned;
-    if (paid && order.stock_returned) {
-      const items = await client.query<{ flavor_id: number; quantity: number }>("SELECT flavor_id, quantity FROM order_items WHERE order_id = $1", [orderId]);
-      stockReserved = true;
-      await client.query("SAVEPOINT reserve_after_expiration");
-      for (const item of items.rows) {
-        const update = await client.query(
-          "UPDATE flavors SET stock = stock - $2, updated_at = NOW() WHERE id = $1 AND stock >= $2 RETURNING id",
-          [item.flavor_id, item.quantity],
-        );
-        if (!update.rowCount) {
-          stockReserved = false;
-          break;
-        }
-      }
-      if (!stockReserved) await client.query("ROLLBACK TO SAVEPOINT reserve_after_expiration");
-      await client.query("RELEASE SAVEPOINT reserve_after_expiration");
-    }
+    const stockCommitted = paid ? await commitStock(client, orderId) : !order.stock_returned;
 
     await client.query(
       `UPDATE orders SET payment_status = $2, payment_method = $3, transaction_nsu = $4,
@@ -152,13 +136,13 @@ export async function applyInfinitePayStatus(orderId: number, payload: Record<st
               status = CASE WHEN $2 = 'pago' AND $6 THEN 'pendente' ELSE status END,
               paid_at = CASE WHEN $2 = 'pago' THEN NOW() ELSE paid_at END, updated_at = NOW()
         WHERE id = $1`,
-      [orderId, paid ? "pago" : "aguardando_pagamento", paymentMethod, transactionNsu, slug, stockReserved],
+      [orderId, paid ? "pago" : "aguardando_pagamento", paymentMethod, transactionNsu, slug, stockCommitted],
     );
     await client.query(
       "INSERT INTO payment_logs (order_id, payment_id, status, raw_payload) VALUES ($1,$2,$3,$4::JSONB)",
-      [orderId, transactionNsu, paid ? "paid" : "pending", JSON.stringify({ ...payload, receipt_url: receiptUrl })],
+      [orderId, transactionNsu, paid ? (stockCommitted ? "paid" : "paid_stock_conflict") : "pending", JSON.stringify({ ...payload, receipt_url: receiptUrl })],
     );
-    if (paid && order.customer_id) await processOrderLoyalty(client, orderId);
+    if (paid && stockCommitted && order.customer_id) await processOrderLoyalty(client, orderId);
     return paid;
   });
 }

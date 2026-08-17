@@ -5,6 +5,7 @@ import { QuantityControl } from "../components/QuantityControl";
 import { PasswordField } from "../components/PasswordField";
 import { api, currency, dateTime, patch, post, remove } from "../lib/api";
 import { localDemoStore } from "../lib/demo";
+import { useStore } from "../lib/store";
 import type { Flavor, Order, StoreConfig } from "../lib/types";
 
 type Metrics = { total: number; paid: number; pending: number; cancelled: number; revenue: number };
@@ -35,6 +36,7 @@ function demoOverview(): Overview {
 
 export function AdminPage() {
   const navigate = useNavigate();
+  const { reload: reloadStore } = useStore();
   const [data, setData] = useState<Overview | null>(null);
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
   const [tab, setTab] = useState<Tab>("orders");
@@ -131,7 +133,7 @@ export function AdminPage() {
 
       {tab === "quick" && <QuickOrder flavors={data.flavors} onCreated={(order) => { updateOverview((current) => { const orders = [order, ...current.orders.filter((item) => item.id !== order.id)]; return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setTab("orders"); void load(true); }} />}
       {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => updateOverview((current) => ({ ...current, flavors }))} />}
-      {tab === "config" && <ConfigManager config={data.config} onChange={(config) => updateOverview((current) => ({ ...current, config }))} />}
+      {tab === "config" && <ConfigManager config={data.config} onChange={(config) => { updateOverview((current) => ({ ...current, config })); void reloadStore(); }} />}
       {tab === "customers" && <CustomerManager customers={customers} onChange={setCustomers} />}
       {tab === "analytics" && <Analytics metrics={data.metrics} orders={data.orders} />}
 
