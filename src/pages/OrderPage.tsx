@@ -39,12 +39,14 @@ export function OrderPage() {
   if (loading) return <Loading label="Consultando seu pedido" />;
   if (error || !order) return <section className="narrow-page"><Notice kind="error">{error || "Pedido não encontrado."}</Notice><Link className="ghost-button" to="/">Voltar para loja</Link></section>;
   const paid = order.paymentStatus === "pago";
+  const waitingPayment = order.paymentStatus === "aguardando_pagamento";
   const finished = paid || ["cancelado", "expirado"].includes(order.paymentStatus);
+  const visibleStatus = waitingPayment ? "Aguardando pagamento" : statusLabels[order.status];
   return (
     <section className="order-page narrow-page page-stack">
       {paid && <div className="thank-you glass-card"><span>✓</span><div><h1>Obrigado pelo seu pedido, {order.customer.name}!</h1></div></div>}
       {order.stockConflict && <Notice kind="error">Seu pagamento foi confirmado depois que a reserva venceu e um item ficou sem estoque. Fale com a loja para receber uma substituição ou reembolso.</Notice>}
-      {!paid && order.paymentStatus === "aguardando_pagamento" && (
+      {!paid && waitingPayment && (
         <div className="payment-reference glass-card">
           <span>Referência do pedido</span><h1>#{order.id}</h1>
           {order.paymentLink && <a className="primary-button" href={order.paymentLink}>Pagar com a InfinitePay</a>}
@@ -54,12 +56,12 @@ export function OrderPage() {
       )}
       {!paid && finished && <Notice kind="error">Pagamento cancelado ou expirado. Os itens foram devolvidos ao estoque.</Notice>}
       <article className="order-summary glass-card">
-        <div className="section-title"><div><span>Pedido #{order.id}</span><h2>{statusLabels[order.status]}</h2></div><b className={`badge badge-${order.paymentStatus}`}>{paid ? "Pago" : order.paymentStatus.replaceAll("_", " ")}</b></div>
+        <div className="section-title"><div><span>Pedido #{order.id}</span><h2>{visibleStatus}</h2></div><b className={`badge badge-${order.paymentStatus}`}>{paid ? "Pago" : order.paymentStatus.replaceAll("_", " ")}</b></div>
         <p className="muted">Criado em {dateTime(order.createdAt)}</p>
         <div className="order-items">{order.items.map((item, index) => <p key={`${item.name}-${index}`}><span>{item.quantity}× {item.name}</span><strong>{currency(item.total)}</strong></p>)}</div>
         <div className="totals"><p><span>Produtos</span><strong>{currency(order.subtotal)}</strong></p><p><span>Entrega</span><strong>{order.deliveryFee ? currency(order.deliveryFee) : "Grátis"}</strong></p><p className="grand-total"><span>Total</span><strong>{currency(order.total)}</strong></p></div>
         <div className="button-row">
-          {whatsappUrl && <a className="primary-button" href={whatsappUrl} target="_blank" rel="noreferrer">Enviar pedido para a loja</a>}
+          {paid && whatsappUrl && <a className="primary-button" href={whatsappUrl} target="_blank" rel="noreferrer">Enviar pedido para a loja</a>}
           {!finished && <button className="danger-button" type="button" onClick={async () => { await post(`/orders/${order.id}/cancel`); void load(); }}>Cancelar pagamento</button>}
           <Link className="ghost-button" to="/">Voltar para loja</Link>
         </div>

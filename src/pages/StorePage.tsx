@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Loading, Notice } from "../components/Loading";
 import { QuantityControl } from "../components/QuantityControl";
@@ -9,8 +9,15 @@ import { useStore } from "../lib/store";
 export function StorePage() {
   const { config, flavors, loading, error } = useStore();
   const cart = useCart();
+  const carouselRef = useRef<HTMLDivElement>(null);
   const [quantities, setQuantities] = useState<Record<number, number>>({});
   const cartById = useMemo(() => new Map(cart.items.map((item) => [item.id, item.quantity])), [cart.items]);
+
+  function scrollCarousel(direction: -1 | 1) {
+    const carousel = carouselRef.current;
+    if (!carousel) return;
+    carousel.scrollBy({ left: direction * Math.max(280, carousel.clientWidth * 0.82), behavior: "smooth" });
+  }
 
   if (loading) return <Loading label="Abrindo a loja" />;
   return (
@@ -18,13 +25,14 @@ export function StorePage() {
       <header className="hero glass-card">
         <span className={`store-status ${config.open ? "open" : "closed"}`}>{config.open ? "Loja aberta" : "Loja fechada"}</span>
         <h1>GELADINHOS GOURMET</h1>
-        <p>Escolha seus sabores favoritos e acompanhe tudo pelo celular.</p>
       </header>
       {error && <Notice kind="error">{error}</Notice>}
       {!config.open && <Notice>Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir.</Notice>}
       <div className="section-title"><div><span>Cardápio</span><h2>Sabores disponíveis</h2></div><b>{flavors.filter((flavor) => flavor.stock > 0).length} sabores</b></div>
-      <div className="flavor-grid" role="region" aria-label="Carrossel de sabores" tabIndex={0}>
-        {flavors.map((flavor) => {
+      <div className="flavor-carousel">
+        <button type="button" className="carousel-arrow carousel-arrow-left" aria-label="Ver sabores anteriores" onClick={() => scrollCarousel(-1)}>‹</button>
+        <div ref={carouselRef} className="flavor-grid" role="region" aria-label="Carrossel de sabores" tabIndex={0}>
+          {flavors.map((flavor) => {
           const inCart = cartById.get(flavor.id) || 0;
           const personalAvailable = Math.max(0, flavor.stock - inCart);
           const selected = Math.min(quantities[flavor.id] || 1, personalAvailable || 1);
@@ -46,7 +54,9 @@ export function StorePage() {
               </div>
             </article>
           );
-        })}
+          })}
+        </div>
+        <button type="button" className="carousel-arrow carousel-arrow-right" aria-label="Ver próximos sabores" onClick={() => scrollCarousel(1)}>›</button>
       </div>
       {cart.count > 0 && <Link className="mobile-checkout-bar" to="/carrinho"><span>{cart.count} item(ns)</span><strong>Ver carrinho · {currency(cart.total)}</strong></Link>}
     </section>

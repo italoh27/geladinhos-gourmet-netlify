@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { Loading, Notice } from "../components/Loading";
 import { QuantityControl } from "../components/QuantityControl";
@@ -15,6 +15,15 @@ type Tab = "orders" | "quick" | "flavors" | "config" | "customers" | "analytics"
 const statusLabel: Record<string, string> = { pendente: "Recebido", em_preparacao: "Em preparação", saiu_entrega: "Saiu para entrega", entregue: "Entregue", cancelado: "Cancelado" };
 const localHost = () => ["localhost", "127.0.0.1"].includes(window.location.hostname);
 const actionError = (reason: unknown, fallback: string) => reason instanceof Error ? reason.message : fallback;
+function metricsFromOrders(orders: Order[]): Metrics {
+  return {
+    total: orders.length,
+    paid: orders.filter((order) => order.paymentStatus === "pago").length,
+    pending: orders.filter((order) => order.paymentStatus === "aguardando_pagamento").length,
+    cancelled: orders.filter((order) => order.status === "cancelado").length,
+    revenue: orders.filter((order) => order.paymentStatus === "pago").reduce((sum, order) => sum + order.total, 0),
+  };
+}
 function demoOverview(): Overview {
   const now = new Date().toISOString();
   const orders: Order[] = [
@@ -35,10 +44,18 @@ export function AdminPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [notifications, setNotifications] = useState(false);
+  const dataRevision = useRef(0);
+
+  const updateOverview = useCallback((updater: (current: Overview) => Overview) => {
+    dataRevision.current += 1;
+    setData((current) => current ? updater(current) : current);
+  }, []);
 
   const load = useCallback(async (quiet = false) => {
+    const revisionAtStart = dataRevision.current;
     try {
       const next = await api<Overview>("/admin/overview");
+      if (revisionAtStart !== dataRevision.current) return;
       setData((current) => {
         if (quiet && notifications && current && next.metrics.total > current.metrics.total && "Notification" in window && Notification.permission === "granted") {
           new Notification("Novo pedido", { body: "Um novo pedido chegou na loja." });
@@ -70,7 +87,10 @@ export function AdminPage() {
   async function updateOrder(order: Order, change: { status?: string; paymentStatus?: string }) {
     try {
       const result = await patch<{ order: Order }>(`/admin/orders/${order.id}`, change);
-      setData((current) => current ? { ...current, orders: current.orders.map((item) => item.id === order.id ? result.order : item) } : current);
+      updateOverview((current) => {
+        const orders = current.orders.map((item) => item.id === order.id ? result.order : item);
+        return { ...current, orders, metrics: metricsFromOrders(orders) };
+      });
       setOpenOrder(result.order);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível atualizar o pedido."); }
   }
@@ -106,12 +126,12 @@ export function AdminPage() {
           {visibleOrders.map((order) => <button type="button" className={`admin-order-row glass-card ${order.paymentStatus === "pago" ? "paid" : ""}`} key={order.id} onClick={() => { setOpenOrder(order); setEditingOrder(false); }}><i /><span><strong>{order.customer.name}</strong><small>#{order.id} · {dateTime(order.createdAt)}</small></span><b>{currency(order.total)}</b></button>)}
         </div>
         {!visibleOrders.length && <Notice>Nenhum pedido neste filtro.</Notice>}
-        {data.config.loyaltyActive && <LoyaltyManager notifications={data.loyalty} progress={data.loyaltyProgress} onReload={() => void load()} />}
+        {data.config.loyaltyActive && <LoyaltyManager notifications={data.loyalty} progress={data.loyaltyProgress} onReload={() => { dataRevision.current += 1; void load(); }} />}
       </>}
 
-      {tab === "quick" && <QuickOrder flavors={data.flavors} onCreated={() => { void load(); setTab("orders"); }} />}
-      {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => setData((current) => current ? { ...current, flavors } : current)} />}
-      {tab === "config" && <ConfigManager config={data.config} onChange={(config) => setData((current) => current ? { ...current, config } : current)} />}
+      {tab === "quick" && <QuickOrder flavors={data.flavors} onCreated={(order) => { updateOverview((current) => { const orders = [order, ...current.orders.filter((item) => item.id !== order.id)]; return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setTab("orders"); void load(true); }} />}
+      {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => updateOverview((current) => ({ ...current, flavors }))} />}
+      {tab === "config" && <ConfigManager config={data.config} onChange={(config) => updateOverview((current) => ({ ...current, config }))} />}
       {tab === "customers" && <CustomerManager customers={customers} onChange={setCustomers} />}
       {tab === "analytics" && <Analytics metrics={data.metrics} orders={data.orders} />}
 
@@ -123,8 +143,8 @@ export function AdminPage() {
           <div className="order-items">{openOrder.items.map((item, index) => <p key={`${item.name}-${index}`}><span>{item.quantity}× {item.name}</span><strong>{currency(item.total)}</strong></p>)}</div>
           <div className="grand-total"><span>Total</span><strong>{currency(openOrder.total)}</strong></div>
           <div className="status-actions"><button type="button" className={openOrder.paymentStatus === "pago" ? "active" : ""} onClick={() => void updateOrder(openOrder, { paymentStatus: openOrder.paymentStatus === "pago" ? "aguardando_pagamento" : "pago" })}>{openOrder.paymentStatus === "pago" ? "Marcar não pago" : "Marcar pago"}</button>{["pendente","em_preparacao","saiu_entrega","entregue"].map((status) => <button type="button" key={status} className={openOrder.status === status ? "active" : ""} onClick={() => void updateOrder(openOrder, { status })}>{statusLabel[status]}</button>)}<button type="button" className="danger-button" onClick={() => void updateOrder(openOrder, { status: "cancelado" })}>Cancelar</button></div>
-          <div className="button-row"><button type="button" className="ghost-button" onClick={() => setEditingOrder((value) => !value)}>{editingOrder ? "Fechar edição" : "Editar pedido"}</button><button type="button" className="danger-button" onClick={async () => { if (!confirm(`Excluir definitivamente o pedido #${openOrder.id}?`)) return; setError(""); try { await remove(`/admin/orders/${openOrder.id}`); setOpenOrder(null); setEditingOrder(false); await load(); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o pedido.")); } }}>Excluir pedido</button></div>
-          {editingOrder && <OrderEditor order={openOrder} flavors={data.flavors} onSave={(order) => { setOpenOrder(order); setEditingOrder(false); setData((current) => current ? { ...current, orders: current.orders.map((item) => item.id === order.id ? order : item) } : current); void load(true); }} />}
+          <div className="button-row"><button type="button" className="ghost-button" onClick={() => setEditingOrder((value) => !value)}>{editingOrder ? "Fechar edição" : "Editar pedido"}</button><button type="button" className="danger-button" onClick={async () => { if (!confirm(`Excluir definitivamente o pedido #${openOrder.id}?`)) return; setError(""); try { const removedId = openOrder.id; await remove(`/admin/orders/${removedId}`); updateOverview((current) => { const orders = current.orders.filter((item) => item.id !== removedId); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setOpenOrder(null); setEditingOrder(false); void load(true); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o pedido.")); } }}>Excluir pedido</button></div>
+          {editingOrder && <OrderEditor order={openOrder} flavors={data.flavors} onSave={(order) => { setOpenOrder(order); setEditingOrder(false); updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); void load(true); }} />}
         </article>
       </dialog>}
     </section>
@@ -147,14 +167,14 @@ function OrderEditor({ order, flavors, onSave }: { order: Order; flavors: Flavor
   </section>;
 }
 
-function QuickOrder({ flavors, onCreated }: { flavors: Flavor[]; onCreated: () => void }) {
+function QuickOrder({ flavors, onCreated }: { flavors: Flavor[]; onCreated: (order: Order) => void }) {
   const available = flavors.filter((flavor) => flavor.active);
   const [form, setForm] = useState({ name: "Cliente balcão", phone: "", paymentStatus: "aguardando_pagamento", status: "pendente", deliveryFee: 0 });
   const [items, setItems] = useState<Array<{ flavorId: number; quantity: number }>>([{ flavorId: available[0]?.id || 0, quantity: 1 }]);
   const [error, setError] = useState("");
   async function submit(event: FormEvent) {
     event.preventDefault(); setError("");
-    try { await post("/admin/orders/quick", { ...form, items }); onCreated(); }
+    try { const result = await post<{ order: Order }>("/admin/orders/quick", { ...form, items }); onCreated(result.order); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível criar o pedido."); }
   }
   return <section className="manager glass-card"><div className="section-title"><div><span>Venda presencial</span><h2>Novo pedido rápido</h2></div></div>{error && <Notice kind="error">{error}</Notice>}<form className="auth-form" onSubmit={submit}><div className="manager-create"><input placeholder="Nome do cliente" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input placeholder="Telefone (opcional)" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /><label className="number-selector"><span>Taxa de entrega</span><QuantityControl value={form.deliveryFee} min={0} max={999} step={0.5} formatValue={currency} label="Taxa de entrega" onChange={(deliveryFee) => setForm({ ...form, deliveryFee })} /></label><select value={form.paymentStatus} onChange={(event) => setForm({ ...form, paymentStatus: event.target.value })}><option value="aguardando_pagamento">Não pago</option><option value="pago">Pago</option></select><select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}><option value="pendente">Recebido</option><option value="em_preparacao">Em preparação</option><option value="saiu_entrega">Saiu para entrega</option><option value="entregue">Entregue</option></select></div><div className="quick-items">{items.map((item, index) => <div className="quick-item" key={index}><select value={item.flavorId} onChange={(event) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, flavorId: Number(event.target.value) } : current))}>{available.map((flavor) => <option value={flavor.id} key={flavor.id}>{flavor.name} · {currency(flavor.price)} · estoque {flavor.stock}</option>)}</select><QuantityControl value={item.quantity} min={1} max={999} onChange={(quantity) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, quantity } : current))} /><button type="button" className="danger-button" onClick={() => setItems(items.filter((_, currentIndex) => currentIndex !== index))}>Remover</button></div>)}</div><div className="button-row"><button type="button" className="ghost-button" onClick={() => setItems([...items, { flavorId: available[0]?.id || 0, quantity: 1 }])}>+ Outra linha</button><button className="primary-button" disabled={!items.length}>Criar pedido</button></div></form></section>;
