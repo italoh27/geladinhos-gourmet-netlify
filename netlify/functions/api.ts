@@ -48,7 +48,15 @@ function routePath(request: Request) {
 function ensureSameOrigin(request: Request) {
   if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return;
   const origin = request.headers.get("origin");
-  if (origin && origin !== new URL(request.url).origin) throw new HttpError(403, "Origem não autorizada.");
+  if (!origin) return;
+  const forwardedHost = request.headers.get("x-forwarded-host") || request.headers.get("host");
+  const forwardedProtocol = request.headers.get("x-forwarded-proto") || new URL(request.url).protocol.replace(":", "");
+  const allowedOrigins = new Set([new URL(request.url).origin]);
+  if (forwardedHost) allowedOrigins.add(`${forwardedProtocol}://${forwardedHost}`);
+  if (process.env.PUBLIC_SITE_URL) {
+    try { allowedOrigins.add(new URL(process.env.PUBLIC_SITE_URL).origin); } catch { /* validada separadamente na configuração */ }
+  }
+  if (!allowedOrigins.has(origin)) throw new HttpError(403, "Origem não autorizada.");
 }
 
 async function storeConfig(client?: { query: typeof query }) {

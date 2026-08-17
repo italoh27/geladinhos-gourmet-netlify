@@ -23,7 +23,7 @@ export function StorePage() {
       {error && <Notice kind="error">{error}</Notice>}
       {!config.open && <Notice>Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir.</Notice>}
       <div className="section-title"><div><span>Cardápio</span><h2>Sabores disponíveis</h2></div><b>{flavors.filter((flavor) => flavor.stock > 0).length} sabores</b></div>
-      <div className="flavor-grid" aria-label="Sabores disponíveis">
+      <div className="flavor-grid" role="region" aria-label="Carrossel de sabores" tabIndex={0}>
         {flavors.map((flavor) => {
           const inCart = cartById.get(flavor.id) || 0;
           const personalAvailable = Math.max(0, flavor.stock - inCart);
@@ -52,4 +52,3 @@ export function StorePage() {
     </section>
   );
 }
-
