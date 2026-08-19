@@ -22,18 +22,20 @@ export function StorePage() {
   if (loading) return <Loading label="Abrindo a loja" />;
   return (
     <section className="store-page page-stack">
-      <header className="hero glass-card">
+      <header className={`hero glass-card ${config.open ? "hero-open" : "hero-closed"}`}>
         <span className={`store-status ${config.open ? "open" : "closed"}`}>{config.open ? "Loja aberta" : "Loja fechada"}</span>
         {config.open ? <h1 className="store-title">GELADINHOS GOURMET</h1> : <div className="notice store-closed-message store-closed-hero" role="status">{config.closedMessage || "Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir."}</div>}
       </header>
-      {config.open && <div className="mobile-open-status notice" role="status">Loja aberta</div>}
       {error && <Notice kind="error">{error}</Notice>}
-      <div className="section-title"><div><span>Cardápio</span><h2>Sabores disponíveis</h2></div><b>{flavors.filter((flavor) => flavor.stock > 0).length} sabores</b></div>
-      <div className="flavor-carousel">
-        <div className="carousel-controls">
+      <div className="section-title flavor-section-title">
+        <div><span>Cardápio</span><h2>Sabores disponíveis</h2></div>
+        <div className="carousel-controls inline-carousel-controls">
           <button type="button" className="carousel-arrow carousel-arrow-left" aria-label="Ver sabores anteriores" onClick={() => scrollCarousel(-1)}>‹</button>
+          <b>{flavors.filter((flavor) => flavor.stock > 0).length} sabores</b>
           <button type="button" className="carousel-arrow carousel-arrow-right" aria-label="Ver próximos sabores" onClick={() => scrollCarousel(1)}>›</button>
         </div>
+      </div>
+      <div className="flavor-carousel">
         <div ref={carouselRef} className="flavor-grid" role="region" aria-label="Carrossel de sabores" tabIndex={0}>
           {flavors.map((flavor) => {
           const inCart = cartById.get(flavor.id) || 0;
