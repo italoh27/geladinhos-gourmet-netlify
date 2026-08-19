@@ -8,12 +8,18 @@ export function AdminLoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(true);
   const navigate = useNavigate();
   useEffect(() => {
     api<{ admin: boolean }>("/auth/me").then((result) => {
-      if (result.admin) navigate("/admin", { replace: true });
-    }).catch(() => {});
+      if (result.admin) {
+        navigate("/admin", { replace: true });
+        return;
+      }
+      setChecking(false);
+    }).catch(() => setChecking(false));
   }, [navigate]);
+  if (checking) return <section className="auth-page glass-card"><div className="auth-heading"><span>Painel protegido</span><h1>Entrando no admin</h1><p>Verificando sua sessão salva.</p></div></section>;
   async function submit(event: FormEvent) {
     event.preventDefault(); setError(""); setLoading(true);
     try { await post("/auth/admin-login", { password }); navigate("/admin"); }

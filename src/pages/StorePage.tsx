@@ -26,6 +26,7 @@ export function StorePage() {
         <span className={`store-status ${config.open ? "open" : "closed"}`}>{config.open ? "Loja aberta" : "Loja fechada"}</span>
         {config.open ? <h1 className="store-title">GELADINHOS GOURMET</h1> : <div className="notice store-closed-message store-closed-hero" role="status">{config.closedMessage || "Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir."}</div>}
       </header>
+      {config.open && <div className="mobile-open-status notice" role="status">Loja aberta</div>}
       {error && <Notice kind="error">{error}</Notice>}
       <div className="section-title"><div><span>Cardápio</span><h2>Sabores disponíveis</h2></div><b>{flavors.filter((flavor) => flavor.stock > 0).length} sabores</b></div>
       <div className="flavor-carousel">

@@ -23,7 +23,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       </header>
       <main>{children}</main>
       {config.whatsappSupportActive && config.whatsappNumber && (
-        <a className="whatsapp-float" href={`https://wa.me/${config.whatsappNumber}?text=${encodeURIComponent("Olá! Preciso de ajuda com um pedido.")}`} target="_blank" rel="noreferrer" aria-label="Fale conosco pelo WhatsApp" title="Fale conosco pelo WhatsApp"><b>WhatsApp</b><span aria-hidden="true">💬</span></a>
+        <a className="whatsapp-float" href={`https://wa.me/${config.whatsappNumber}?text=${encodeURIComponent("Olá! Preciso de ajuda com um pedido.")}`} target="_blank" rel="noreferrer" aria-label="Fale conosco pelo WhatsApp" title="Fale conosco pelo WhatsApp"><span aria-hidden="true">💬</span></a>
       )}
     </div>
   );
