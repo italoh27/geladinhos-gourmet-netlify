@@ -11,6 +11,7 @@ type StoreContextValue = StorePayload & {
 };
 
 const StoreContext = createContext<StoreContextValue | null>(null);
+const STORE_UPDATED_EVENT = "store-updated";
 
 const empty: StorePayload = {
   config: {
@@ -45,6 +46,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    const refresh = () => void reload();
+    window.addEventListener(STORE_UPDATED_EVENT, refresh);
+    window.addEventListener("focus", refresh);
+    return () => {
+      window.removeEventListener(STORE_UPDATED_EVENT, refresh);
+      window.removeEventListener("focus", refresh);
+    };
+  }, [reload]);
   const value = useMemo<StoreContextValue>(() => ({
     ...data, loading, error, reload,
     setCustomer(customer) { setData((current) => ({ ...current, customer })); },
@@ -56,4 +66,8 @@ export function useStore() {
   const value = useContext(StoreContext);
   if (!value) throw new Error("StoreProvider ausente.");
   return value;
+}
+
+export function notifyStoreUpdated() {
+  window.dispatchEvent(new Event(STORE_UPDATED_EVENT));
 }

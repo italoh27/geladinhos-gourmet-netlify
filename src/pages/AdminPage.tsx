@@ -5,7 +5,7 @@ import { QuantityControl } from "../components/QuantityControl";
 import { PasswordField } from "../components/PasswordField";
 import { api, currency, dateTime, patch, post, remove } from "../lib/api";
 import { localDemoStore } from "../lib/demo";
-import { useStore } from "../lib/store";
+import { notifyStoreUpdated, useStore } from "../lib/store";
 import type { Flavor, Order, StoreConfig } from "../lib/types";
 
 type Metrics = { total: number; paid: number; pending: number; cancelled: number; revenue: number };
@@ -93,6 +93,7 @@ export function AdminPage() {
         const orders = current.orders.map((item) => item.id === order.id ? result.order : item);
         return { ...current, orders, metrics: metricsFromOrders(orders) };
       });
+      notifyStoreUpdated();
       setOpenOrder(result.order);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível atualizar o pedido."); }
   }
@@ -128,13 +129,13 @@ export function AdminPage() {
           {visibleOrders.map((order) => <button type="button" className={`admin-order-row glass-card ${order.paymentStatus === "pago" ? "paid" : ""}`} key={order.id} onClick={() => { setOpenOrder(order); setEditingOrder(false); }}><i /><span><strong>{order.customer.name}</strong><small>#{order.id} · {dateTime(order.createdAt)}</small></span><b>{currency(order.total)}</b></button>)}
         </div>
         {!visibleOrders.length && <Notice>Nenhum pedido neste filtro.</Notice>}
-        {data.config.loyaltyActive && <LoyaltyManager notifications={data.loyalty} progress={data.loyaltyProgress} onReload={() => { dataRevision.current += 1; void load(); }} />}
+        {data.config.loyaltyActive && <LoyaltyManager notifications={data.loyalty} progress={data.loyaltyProgress} onReload={() => { dataRevision.current += 1; void load(); notifyStoreUpdated(); }} />}
       </>}
 
-      {tab === "quick" && <QuickOrder flavors={data.flavors} onCreated={(order) => { updateOverview((current) => { const orders = [order, ...current.orders.filter((item) => item.id !== order.id)]; return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setTab("orders"); void load(true); }} />}
-      {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => updateOverview((current) => ({ ...current, flavors }))} />}
-      {tab === "config" && <ConfigManager config={data.config} onChange={(config) => { updateOverview((current) => ({ ...current, config })); void reloadStore(); }} />}
-      {tab === "customers" && <CustomerManager customers={customers} onChange={setCustomers} />}
+      {tab === "quick" && <QuickOrder flavors={data.flavors} onCreated={(order) => { updateOverview((current) => { const orders = [order, ...current.orders.filter((item) => item.id !== order.id)]; return { ...current, orders, metrics: metricsFromOrders(orders) }; }); notifyStoreUpdated(); setTab("orders"); void load(true); }} />}
+      {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => { updateOverview((current) => ({ ...current, flavors })); notifyStoreUpdated(); }} />}
+      {tab === "config" && <ConfigManager config={data.config} onChange={(config) => { updateOverview((current) => ({ ...current, config })); notifyStoreUpdated(); void reloadStore(); }} />}
+      {tab === "customers" && <CustomerManager customers={customers} onChange={(rows) => { setCustomers(rows); notifyStoreUpdated(); }} />}
       {tab === "analytics" && <Analytics metrics={data.metrics} orders={data.orders} />}
 
       {openOrder && <dialog className="admin-order-dialog" open onClick={(event) => { if (event.target === event.currentTarget) { setOpenOrder(null); setEditingOrder(false); } }}>
@@ -146,7 +147,7 @@ export function AdminPage() {
           <div className="grand-total"><span>Total</span><strong>{currency(openOrder.total)}</strong></div>
           <div className="status-actions"><button type="button" className={openOrder.paymentStatus === "pago" ? "active" : ""} onClick={() => void updateOrder(openOrder, { paymentStatus: openOrder.paymentStatus === "pago" ? "aguardando_pagamento" : "pago" })}>{openOrder.paymentStatus === "pago" ? "Marcar não pago" : "Marcar pago"}</button>{["pendente","em_preparacao","saiu_entrega","entregue"].map((status) => <button type="button" key={status} className={openOrder.status === status ? "active" : ""} onClick={() => void updateOrder(openOrder, { status })}>{statusLabel[status]}</button>)}<button type="button" className="danger-button" onClick={() => void updateOrder(openOrder, { status: "cancelado" })}>Cancelar</button></div>
           <div className="button-row"><button type="button" className="ghost-button" onClick={() => setEditingOrder((value) => !value)}>{editingOrder ? "Fechar edição" : "Editar pedido"}</button><button type="button" className="danger-button" onClick={async () => { if (!confirm(`Excluir definitivamente o pedido #${openOrder.id}?`)) return; setError(""); try { const removedId = openOrder.id; await remove(`/admin/orders/${removedId}`); updateOverview((current) => { const orders = current.orders.filter((item) => item.id !== removedId); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setOpenOrder(null); setEditingOrder(false); void load(true); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o pedido.")); } }}>Excluir pedido</button></div>
-          {editingOrder && <OrderEditor order={openOrder} flavors={data.flavors} onSave={(order) => { setOpenOrder(order); setEditingOrder(false); updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); void load(true); }} />}
+          {editingOrder && <OrderEditor order={openOrder} flavors={data.flavors} onSave={(order) => { setOpenOrder(order); setEditingOrder(false); updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); notifyStoreUpdated(); void load(true); }} />}
         </article>
       </dialog>}
     </section>
