@@ -21,6 +21,7 @@ export type StoreConfig = {
   freeDelivery: boolean;
   deliveryFee: number;
   whatsappNumber: string;
+  closedMessage: string;
   pix: { key: string; name: string; bank: string } | null;
 };
 

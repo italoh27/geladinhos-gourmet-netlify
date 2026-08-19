@@ -1,14 +1,19 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Notice } from "../components/Loading";
 import { PasswordField } from "../components/PasswordField";
-import { post } from "../lib/api";
+import { api, post } from "../lib/api";
 
 export function AdminLoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  useEffect(() => {
+    api<{ admin: boolean }>("/auth/me").then((result) => {
+      if (result.admin) navigate("/admin", { replace: true });
+    }).catch(() => {});
+  }, [navigate]);
   async function submit(event: FormEvent) {
     event.preventDefault(); setError(""); setLoading(true);
     try { await post("/auth/admin-login", { password }); navigate("/admin"); }
@@ -24,4 +29,3 @@ export function AdminLoginPage() {
     </section>
   );
 }
-

@@ -14,6 +14,7 @@ CREATE TABLE store_config (
   free_delivery BOOLEAN NOT NULL DEFAULT FALSE,
   delivery_fee NUMERIC(10,2) NOT NULL DEFAULT 0 CHECK (delivery_fee >= 0),
   whatsapp_number TEXT NOT NULL DEFAULT '',
+  closed_message TEXT NOT NULL DEFAULT 'Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir.',
   pix_key TEXT NOT NULL DEFAULT '',
   pix_name TEXT NOT NULL DEFAULT '',
   pix_bank TEXT NOT NULL DEFAULT 'InfinitePay',

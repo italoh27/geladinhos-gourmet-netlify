@@ -18,7 +18,7 @@ const empty: StorePayload = {
     storeName: "Geladinhos Gourmet", open: true, requireRegistration: false, requireAddress: true,
     infinitePayActive: true, paymentBeforeOrder: false, manualPixActive: false,
     whatsappSupportActive: false, loyaltyActive: false, deliveryEnabled: true,
-    freeDelivery: false, deliveryFee: 0, whatsappNumber: "", pix: null,
+    freeDelivery: false, deliveryFee: 0, whatsappNumber: "", closedMessage: "Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir.", pix: null,
   },
   flavors: [],
   customer: null,

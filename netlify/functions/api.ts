@@ -23,6 +23,7 @@ type StoreConfig = {
   free_delivery: boolean;
   delivery_fee: string | number;
   whatsapp_number: string;
+  closed_message: string;
   pix_key: string;
   pix_name: string;
   pix_bank: string;
@@ -61,6 +62,12 @@ function ensureSameOrigin(request: Request) {
 
 async function storeConfig(client?: { query: typeof query }) {
   const run = client ? client.query.bind(client) : query;
+  const columns = await run<{ column_name: string }>(
+    "SELECT column_name FROM information_schema.columns WHERE table_name='store_config' AND column_name='closed_message'",
+  );
+  if (!columns.rows.length) {
+    await run("ALTER TABLE store_config ADD COLUMN closed_message TEXT NOT NULL DEFAULT 'Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir.'");
+  }
   const { rows } = await run("SELECT * FROM store_config WHERE id = 1");
   if (!rows[0]) throw new Error("Configuração da loja não encontrada.");
   return rows[0] as StoreConfig;
@@ -83,6 +90,7 @@ function publicConfig(config: StoreConfig) {
     freeDelivery: config.free_delivery,
     deliveryFee: config.free_delivery ? 0 : Number(config.delivery_fee),
     whatsappNumber,
+    closedMessage: cleanText(config.closed_message, 240) || "Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir.",
     pix: config.manual_pix_active ? { key: config.pix_key, name: config.pix_name, bank: config.pix_bank } : null,
   };
 }
@@ -702,6 +710,7 @@ async function handleAdminConfig(request: Request) {
     freeDelivery: data.freeDelivery === undefined ? current.free_delivery : Boolean(data.freeDelivery),
     deliveryFee: data.deliveryFee === undefined ? Number(current.delivery_fee) : money(data.deliveryFee),
     whatsappNumber: data.whatsappNumber === undefined ? current.whatsapp_number : cleanText(data.whatsappNumber, 20).replace(/\D/g, ""),
+    closedMessage: data.closedMessage === undefined ? current.closed_message : cleanText(data.closedMessage, 240),
     pixKey: data.pixKey === undefined ? current.pix_key : cleanText(data.pixKey, 180),
     pixName: data.pixName === undefined ? current.pix_name : cleanText(data.pixName, 120),
     pixBank: data.pixBank === undefined ? current.pix_bank : cleanText(data.pixBank, 100),
@@ -713,12 +722,12 @@ async function handleAdminConfig(request: Request) {
     `UPDATE store_config SET store_name=$1,store_open=$2,require_registration=$3,require_address=$4,
       infinitepay_active=$5,payment_before_order=$6,manual_pix_active=$7,whatsapp_support_active=$8,
       loyalty_active=$9,delivery_enabled=$10,free_delivery=$11,delivery_fee=$12,whatsapp_number=$13,
-      pix_key=$14,pix_name=$15,pix_bank=$16,updated_at=NOW() WHERE id=1 RETURNING *`,
+      closed_message=$14,pix_key=$15,pix_name=$16,pix_bank=$17,updated_at=NOW() WHERE id=1 RETURNING *`,
     [
       next.storeName, next.open, next.requireRegistration, next.requireAddress,
       next.infinitePayActive, next.paymentBeforeOrder, next.manualPixActive, next.whatsappSupportActive,
       next.loyaltyActive, next.deliveryEnabled, next.freeDelivery, next.deliveryFee, next.whatsappNumber,
-      next.pixKey, next.pixName, next.pixBank,
+      next.closedMessage, next.pixKey, next.pixName, next.pixBank,
     ],
   );
   const saved = result.rows[0] as StoreConfig;

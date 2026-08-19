@@ -30,6 +30,7 @@ export const localDemoStore: StorePayload = {
     freeDelivery: false,
     deliveryFee: 3,
     whatsappNumber: "",
+    closedMessage: "Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir.",
     pix: null,
   },
   flavors: flavors.map(([id, name, price, stock, image]) => ({
@@ -42,4 +43,3 @@ export const localDemoStore: StorePayload = {
   })),
   customer: null,
 };
-

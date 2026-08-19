@@ -24,13 +24,15 @@ export function StorePage() {
     <section className="store-page page-stack">
       <header className="hero glass-card">
         <span className={`store-status ${config.open ? "open" : "closed"}`}>{config.open ? "Loja aberta" : "Loja fechada"}</span>
-        <h1>GELADINHOS GOURMET</h1>
+        {config.open ? <h1 className="store-title">GELADINHOS GOURMET</h1> : <div className="notice store-closed-message store-closed-hero" role="status">{config.closedMessage || "Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir."}</div>}
       </header>
       {error && <Notice kind="error">{error}</Notice>}
-      {!config.open && <Notice>Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir.</Notice>}
       <div className="section-title"><div><span>Cardápio</span><h2>Sabores disponíveis</h2></div><b>{flavors.filter((flavor) => flavor.stock > 0).length} sabores</b></div>
       <div className="flavor-carousel">
-        <button type="button" className="carousel-arrow carousel-arrow-left" aria-label="Ver sabores anteriores" onClick={() => scrollCarousel(-1)}>‹</button>
+        <div className="carousel-controls">
+          <button type="button" className="carousel-arrow carousel-arrow-left" aria-label="Ver sabores anteriores" onClick={() => scrollCarousel(-1)}>‹</button>
+          <button type="button" className="carousel-arrow carousel-arrow-right" aria-label="Ver próximos sabores" onClick={() => scrollCarousel(1)}>›</button>
+        </div>
         <div ref={carouselRef} className="flavor-grid" role="region" aria-label="Carrossel de sabores" tabIndex={0}>
           {flavors.map((flavor) => {
           const inCart = cartById.get(flavor.id) || 0;
@@ -56,7 +58,6 @@ export function StorePage() {
           );
           })}
         </div>
-        <button type="button" className="carousel-arrow carousel-arrow-right" aria-label="Ver próximos sabores" onClick={() => scrollCarousel(1)}>›</button>
       </div>
       {cart.count > 0 && <Link className="mobile-checkout-bar" to="/carrinho"><span>{cart.count} item(ns)</span><strong>Ver carrinho · {currency(cart.total)}</strong></Link>}
     </section>
