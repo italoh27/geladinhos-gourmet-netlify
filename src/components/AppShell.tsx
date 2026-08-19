@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 import { useCart } from "../lib/cart";
 import { useStore } from "../lib/store";
 
@@ -7,6 +7,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [menu, setMenu] = useState(false);
   const { count } = useCart();
   const { config, customer } = useStore();
+  const location = useLocation();
+  const showWhatsApp = location.pathname === "/" && config.whatsappSupportActive && config.whatsappNumber;
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -22,7 +24,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         )}
       </header>
       <main>{children}</main>
-      {config.whatsappSupportActive && config.whatsappNumber && (
+      {showWhatsApp && (
         <a className="whatsapp-float" href={`https://wa.me/${config.whatsappNumber}?text=${encodeURIComponent("Olá! Preciso de ajuda com um pedido.")}`} target="_blank" rel="noreferrer" aria-label="Fale conosco pelo WhatsApp" title="Fale conosco pelo WhatsApp"><span aria-hidden="true">💬</span></a>
       )}
     </div>
