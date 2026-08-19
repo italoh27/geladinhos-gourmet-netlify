@@ -6,6 +6,9 @@ import { post } from "../lib/api";
 import { useStore } from "../lib/store";
 import type { Customer } from "../lib/types";
 
+const CUSTOMER_PROFILE_KEY = "gg_customer_profile";
+const CUSTOMER_ACCESS_KEY = "gg_customer_access";
+
 export function CustomerAccessPage() {
   const [mode, setMode] = useState<"login" | "register" | "reset">("login");
   const [resetStep, setResetStep] = useState<"request" | "confirm">("request");
@@ -17,6 +20,22 @@ export function CustomerAccessPage() {
   const [search] = useSearchParams();
   const navigate = useNavigate();
   const destination = search.get("voltar") || "/meus-pedidos";
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(CUSTOMER_ACCESS_KEY) || localStorage.getItem(CUSTOMER_PROFILE_KEY);
+      if (!saved) return;
+      const parsed = JSON.parse(saved) as Partial<typeof values>;
+      setValues((current) => ({
+        ...current,
+        name: parsed.name || current.name,
+        phone: parsed.phone || current.phone,
+        email: parsed.email || current.email,
+      }));
+    } catch {
+      // Se o storage estiver vazio/corrompido, seguimos com os campos limpos.
+    }
+  }, []);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -41,6 +60,15 @@ export function CustomerAccessPage() {
       }
       const result = await post<{ customer: Customer }>(mode === "login" ? "/auth/login" : "/auth/register", values);
       setCustomer(result.customer);
+      try {
+        localStorage.setItem(CUSTOMER_ACCESS_KEY, JSON.stringify({
+          name: result.customer.name,
+          phone: result.customer.phone,
+          email: result.customer.email,
+        }));
+      } catch {
+        // Apenas persistência local opcional.
+      }
       navigate(destination);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Não foi possível entrar.");

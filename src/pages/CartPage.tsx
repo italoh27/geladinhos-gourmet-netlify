@@ -9,19 +9,71 @@ import type { Order } from "../lib/types";
 
 type Address = { postalCode: string; street: string; number: string; neighborhood: string; city: string; complement: string; reference: string };
 const emptyAddress: Address = { postalCode: "", street: "", number: "", neighborhood: "", city: "", complement: "", reference: "" };
+const CHECKOUT_DRAFT_KEY = "gg_checkout_draft";
+const CUSTOMER_PROFILE_KEY = "gg_customer_profile";
+
+type CheckoutDraft = {
+  name: string;
+  phone: string;
+  email: string;
+  address: Address;
+};
 
 export function CartPage() {
   const cart = useCart();
   const { config, customer } = useStore();
   const navigate = useNavigate();
-  const [name, setName] = useState(customer?.name || "");
-  const [phone, setPhone] = useState(customer?.phone || "");
-  const [email, setEmail] = useState(customer?.email || "");
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
   const [address, setAddress] = useState<Address>(emptyAddress);
   const [cepState, setCepState] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const deliveryFee = config.deliveryEnabled && !config.freeDelivery ? config.deliveryFee : 0;
+
+  useEffect(() => {
+    const applyDraft = (draft: Partial<CheckoutDraft> | null) => {
+      if (!draft) return;
+      if (draft.name) setName(draft.name);
+      if (draft.phone) setPhone(draft.phone);
+      if (draft.email) setEmail(draft.email);
+      if (draft.address) setAddress((current) => ({ ...current, ...draft.address }));
+    };
+    try {
+      const savedDraft = localStorage.getItem(CHECKOUT_DRAFT_KEY);
+      if (savedDraft) applyDraft(JSON.parse(savedDraft) as Partial<CheckoutDraft>);
+      const savedCustomer = localStorage.getItem(CUSTOMER_PROFILE_KEY);
+      if (savedCustomer) applyDraft(JSON.parse(savedCustomer) as Partial<CheckoutDraft>);
+    } catch {
+      // Ignora dados corrompidos e segue com os campos limpos.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (customer) {
+      setName(customer.name || "");
+      setPhone(customer.phone || "");
+      setEmail(customer.email || "");
+      try {
+        localStorage.setItem(CUSTOMER_PROFILE_KEY, JSON.stringify({
+          name: customer.name || "",
+          phone: customer.phone || "",
+          email: customer.email || "",
+        }));
+      } catch {
+        // Sem persistência local, o login do backend continua valendo.
+      }
+    }
+  }, [customer]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHECKOUT_DRAFT_KEY, JSON.stringify({ name, phone, email, address }));
+    } catch {
+      // Se o navegador bloquear storage, seguimos normalmente.
+    }
+  }, [name, phone, email, address]);
 
   useEffect(() => {
     const digits = address.postalCode.replace(/\D/g, "");
@@ -54,6 +106,7 @@ export function CartPage() {
         name, phone, email, address,
       });
       localStorage.setItem(`pedido-token-${result.order.id}`, result.token);
+      localStorage.setItem(CUSTOMER_PROFILE_KEY, JSON.stringify({ name, phone, email }));
       cart.clear();
       navigate(`/pedido/${result.order.id}?token=${encodeURIComponent(result.token)}`, { state: { checkoutUrl: result.checkoutUrl } });
     } catch (reason) {
