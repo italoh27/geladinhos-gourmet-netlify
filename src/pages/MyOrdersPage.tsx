@@ -7,7 +7,7 @@ import { useStore } from "../lib/store";
 import type { Order } from "../lib/types";
 
 export function MyOrdersPage() {
-  const { customer, setCustomer } = useStore();
+  const { customer, setCustomer, config } = useStore();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -34,9 +34,14 @@ export function MyOrdersPage() {
       <div className="section-title glass-card page-heading"><div><span>Olá, {customer.name}</span><h1>Meus pedidos</h1></div><button className="ghost-button" type="button" onClick={async () => { await post("/auth/logout"); setCustomer(null); }}>Sair</button></div>
       {error && <Notice kind="error">{error}</Notice>}
       {message && <Notice kind="success">{message}</Notice>}
-      <section className="manager glass-card loyalty-customer-card">
-        <div className="section-title"><div><span>Campanha de fidelidade</span><h2>Seu progresso</h2></div><button className="text-button" type="button" onClick={() => setShowPassword((value) => !value)}>Alterar senha</button></div>
-        <div className="analytics-grid"><article><span>Geladinhos de R$ 5</span><strong>{loyalty.progress_5}/10</strong><small>{loyalty.rewards_5} brinde(s)</small></article><article><span>Geladinhos de R$ 7</span><strong>{loyalty.progress_7}/10</strong><small>{loyalty.rewards_7} brinde(s)</small></article></div>
+      {config.loyaltyActive && (
+        <section className="manager glass-card loyalty-customer-card">
+          <div className="section-title"><div><span>Campanha de fidelidade</span><h2>Seu progresso</h2></div></div>
+          <div className="analytics-grid"><article><span>Geladinhos de R$ 5</span><strong>{loyalty.progress_5}/10</strong><small>{loyalty.rewards_5} brinde(s)</small></article><article><span>Geladinhos de R$ 7</span><strong>{loyalty.progress_7}/10</strong><small>{loyalty.rewards_7} brinde(s)</small></article></div>
+        </section>
+      )}
+      <section className="manager glass-card password-change-card">
+        <div className="section-title"><div><span>Segurança</span><h2>Alterar senha</h2></div><button className="text-button" type="button" onClick={() => setShowPassword((value) => !value)}>{showPassword ? "Ocultar" : "Mostrar"}</button></div>
         {showPassword && <form className="auth-form password-change-form" onSubmit={changePassword}><label>Senha atual<PasswordField value={passwords.currentPassword} onChange={(event) => setPasswords({ ...passwords, currentPassword: event.target.value })} autoComplete="current-password" required /></label><label>Nova senha<PasswordField value={passwords.newPassword} onChange={(event) => setPasswords({ ...passwords, newPassword: event.target.value })} autoComplete="new-password" minLength={6} required /></label><label>Confirmar nova senha<PasswordField value={passwords.confirm} onChange={(event) => setPasswords({ ...passwords, confirm: event.target.value })} autoComplete="new-password" minLength={6} required /></label><button className="primary-button">Salvar nova senha</button></form>}
       </section>
       <div className="customer-order-list">{orders.map((order) => (
