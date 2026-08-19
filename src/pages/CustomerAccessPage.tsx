@@ -55,7 +55,7 @@ export function CustomerAccessPage() {
 
   return (
     <section className="auth-page glass-card">
-      <div className="auth-heading"><span>Área do cliente</span><h1>{mode === "login" ? "Entre na sua conta" : mode === "register" ? "Crie sua conta" : "Recupere sua senha"}</h1><p>{mode === "reset" ? "Receba um código automático no e-mail cadastrado." : "Acompanhe pedidos e sua campanha de fidelidade."}</p></div>
+      <div className="auth-heading"><span>Área do cliente</span><h1>{mode === "login" ? "Entre na sua conta" : mode === "register" ? "Crie sua conta" : "Recupere sua senha"}</h1><p>{mode === "reset" ? "Receba um código automático no e-mail cadastrado." : "Acompanhe pedidos"}</p></div>
       {mode !== "reset" && <div className="segmented-control" role="tablist">
         <button type="button" className={mode === "login" ? "active" : ""} onClick={() => { setMode("login"); setError(""); }}>Entrar</button>
         <button type="button" className={mode === "register" ? "active" : ""} onClick={() => { setMode("register"); setError(""); }}>Cadastrar</button>
