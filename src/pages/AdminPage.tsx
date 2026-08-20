@@ -223,7 +223,7 @@ function FlavorManager({ flavors, onChange }: { flavors: Flavor[]; onChange: (fl
   }
   return <section className="manager glass-card" id="flavor-manager-top">
     <div className="section-title"><div><span>Cardápio e estoque</span><h2>Gerenciamento de sabores</h2></div></div>
-    <label className="mobile-flavor-actions">Ações dos sabores<select aria-label="Ir para um sabor" defaultValue="" onChange={(event) => { if (event.target.value) jumpTo(event.target.value); event.target.value = ""; }}><option value="" disabled>Selecione um sabor</option><option value="novo-sabor">Criar novo sabor</option>{flavors.map((flavor) => <option key={flavor.id} value={`sabor-${flavor.id}`}>{flavor.name}</option>)}</select></label>
+    <label className="mobile-flavor-actions">Gerenciamento de sabores<select aria-label="Ir para um sabor" defaultValue="" onChange={(event) => { if (event.target.value) jumpTo(event.target.value); event.target.value = ""; }}><option value="" disabled>Selecione um sabor</option><option value="novo-sabor">Criar novo sabor</option>{flavors.map((flavor) => <option key={flavor.id} value={`sabor-${flavor.id}`}>{flavor.name}</option>)}</select></label>
     {message && <Notice kind="success">{message}</Notice>}{error && <Notice kind="error">{error}</Notice>}
     <form className="manager-create" id="novo-sabor" onSubmit={create}>
       <input aria-label="Nome do novo sabor" placeholder="Nome do sabor" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} required />
