@@ -116,6 +116,16 @@ function normalizeFlavor(row: Record<string, unknown>) {
   };
 }
 
+async function autoDeactivateEmptyFlavors() {
+  await query(
+    `UPDATE flavors
+        SET active = FALSE, updated_at = NOW()
+      WHERE active = TRUE
+        AND stock = 0
+        AND updated_at <= NOW() - INTERVAL '1 minute'`
+  );
+}
+
 function normalizeOrder(order: Record<string, unknown> | null) {
   if (!order) return null;
   return {
@@ -176,6 +186,7 @@ async function whatsappForOrder(order: Record<string, unknown>) {
 async function handleStore(request: Request) {
   only(request, "GET");
   await releaseExpiredReservations();
+  await autoDeactivateEmptyFlavors();
   const [config, flavors, session] = await Promise.all([
     storeConfig(),
     query("SELECT * FROM flavors WHERE active = TRUE ORDER BY name"),
@@ -663,6 +674,7 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
 
 async function handleAdminFlavor(request: Request, flavorId?: number) {
   await requireAdmin(request);
+  await autoDeactivateEmptyFlavors();
   if (request.method === "POST") {
     const data = await body<{ name: string; price: number; stock?: number; imageUrl?: string; active?: boolean }>(request);
     const name = cleanText(data.name, 100);
@@ -686,6 +698,9 @@ async function handleAdminFlavor(request: Request, flavorId?: number) {
       ],
     );
     if (!result.rows[0]) throw new HttpError(404, "Sabor não encontrado.");
+    if (Number(result.rows[0].stock) === 0 && result.rows[0].active) {
+      await query("UPDATE flavors SET updated_at = NOW() WHERE id = $1", [flavorId]);
+    }
     return json({ flavor: normalizeFlavor(result.rows[0]) });
   }
   throw new HttpError(405, "Método não permitido.");
