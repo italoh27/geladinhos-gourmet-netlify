@@ -137,7 +137,7 @@ export function CartPage() {
         <div className="section-title"><div><span>Finalização</span><h2>Dados do pedido</h2></div></div>
         {error && <Notice kind="error">{error}</Notice>}
         {!customer && <label>Nome<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" required /></label>}
-        {!customer && <label>Telefone<input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" autoComplete="tel" required /></label>}
+        {!customer && <label>Telefone <small>opcional</small><input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" autoComplete="tel" /></label>}
         {!customer && <label>E-mail opcional<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" /></label>}
         {config.deliveryEnabled && config.requireAddress && (
           <fieldset className="address-fields">
