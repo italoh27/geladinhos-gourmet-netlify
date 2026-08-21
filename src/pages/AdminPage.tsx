@@ -119,7 +119,7 @@ export function AdminPage() {
       </header>
       <label className="mobile-admin-actions">Ações do admin<select value={tab} onChange={(event) => setTab(event.target.value as Tab)}><option value="orders">Pedidos</option><option value="quick">Pedido rápido</option><option value="flavors">Gerenciamento de sabores</option><option value="config">Configurações</option><option value="customers">Clientes</option><option value="analytics">Análise de dados</option></select></label>
       <nav className="admin-tabs" aria-label="Áreas do painel">
-        {(["orders", "quick", "flavors", "config", "customers", "analytics"] as Tab[]).map((item) => <button type="button" key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{({ orders: "Pedidos", quick: "Pedido rápido", flavors: "Gerenciamento de sabores", config: "Configurações", customers: "Clientes", analytics: "Análise" } as Record<Tab,string>)[item]}</button>)}
+        {(["orders", "quick", "flavors", "config", "customers", "analytics"] as Tab[]).map((item) => <button type="button" key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>{({ orders: "Pedidos", quick: "Pedido rápido", flavors: "Gerenciamento de sabores", config: "Configurações", customers: "Clientes", analytics: "Análise de dados" } as Record<Tab,string>)[item]}</button>)}
       </nav>
       {error && <Notice kind="error">{error}</Notice>}
 

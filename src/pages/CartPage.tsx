@@ -136,9 +136,9 @@ export function CartPage() {
       <aside className="glass-card checkout-card">
         <div className="section-title"><div><span>Finalização</span><h2>Dados do pedido</h2></div></div>
         {error && <Notice kind="error">{error}</Notice>}
-        {!customer && <label>Nome<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" required /></label>}
-        {!customer && <label>Telefone <small>opcional</small><input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" autoComplete="tel" /></label>}
-        {!customer && <label>E-mail opcional<input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" /></label>}
+        {!customer && <label>Nome <small>opcional</small><input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" placeholder="Seu nome" /></label>}
+        {!customer && <label>Telefone <small>opcional</small><input value={phone} onChange={(event) => setPhone(event.target.value)} inputMode="tel" autoComplete="tel" placeholder="Seu telefone" /></label>}
+        {!customer && <label>E-mail <small>opcional</small><input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" placeholder="Seu e-mail" /></label>}
         {config.deliveryEnabled && config.requireAddress && (
           <fieldset className="address-fields">
             <legend>Endereço de entrega</legend>
