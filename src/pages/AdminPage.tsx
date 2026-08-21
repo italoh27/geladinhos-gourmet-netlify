@@ -16,6 +16,7 @@ type Tab = "orders" | "quick" | "flavors" | "config" | "customers" | "analytics"
 const statusLabel: Record<string, string> = { pendente: "Recebido", em_preparacao: "Em preparação", saiu_entrega: "Saiu para entrega", entregue: "Entregue", cancelado: "Cancelado" };
 const localHost = () => ["localhost", "127.0.0.1"].includes(window.location.hostname);
 const actionError = (reason: unknown, fallback: string) => reason instanceof Error ? reason.message : fallback;
+const todayISO = () => new Date().toISOString().slice(0, 10);
 function metricsFromOrders(orders: Order[]): Metrics {
   return {
     total: orders.length,
@@ -41,7 +42,7 @@ export function AdminPage() {
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
   const [tab, setTab] = useState<Tab>("orders");
   const [filter, setFilter] = useState("todos");
-  const [orderDateFilter, setOrderDateFilter] = useState("");
+  const [orderDateFilter, setOrderDateFilter] = useState(todayISO());
   const [openOrder, setOpenOrder] = useState<Order | null>(null);
   const [editingOrder, setEditingOrder] = useState(false);
   const [error, setError] = useState("");
@@ -80,6 +81,15 @@ export function AdminPage() {
     }).catch(() => navigate("/admin/login", { replace: true }));
   }, [navigate]);
   useEffect(() => { const timer = window.setInterval(() => void load(true), 10000); return () => window.clearInterval(timer); }, [load]);
+  useEffect(() => {
+    const syncToday = () => setOrderDateFilter(todayISO());
+    syncToday();
+    const now = new Date();
+    const nextMidnight = new Date(now);
+    nextMidnight.setHours(24, 0, 1, 0);
+    const timeout = window.setTimeout(() => syncToday(), Math.max(1000, nextMidnight.getTime() - now.getTime()));
+    return () => window.clearTimeout(timeout);
+  }, []);
   useEffect(() => {
     if (tab !== "customers" || customers.length) return;
     api<{ customers: CustomerRow[] }>("/admin/customers").then((result) => setCustomers(result.customers)).catch((reason) => { if (localHost()) setCustomers([{ id:1,name:"Ana",phone:"11999999999",email:"ana@exemplo.com",created_at:new Date().toISOString(),order_count:3,total_paid:75,progress_5:4,progress_7:8,rewards_5:0,rewards_7:1 }]); else setError(reason.message); });
@@ -138,7 +148,7 @@ export function AdminPage() {
           <button type="button" className="ghost-button" onClick={() => setOrderDateFilter("")}>Limpar data</button>
         </div>
         <div className="admin-order-grid">
-          {visibleOrders.map((order) => <button type="button" className={`admin-order-row glass-card ${order.paymentStatus === "pago" ? "paid" : ""}`} key={order.id} onClick={() => { setOpenOrder(order); setEditingOrder(false); }}><i /><span><strong>{order.customer.name}</strong><small>#{order.id} · {dateTime(order.createdAt)}</small></span><b>{currency(order.total)}</b></button>)}
+          {visibleOrders.map((order) => <button type="button" className={`admin-order-row glass-card ${order.paymentStatus === "pago" ? "paid" : ""}`} key={order.id} onClick={() => { setOpenOrder(order); setEditingOrder(false); }}><i /><span><strong>{order.customer.name}</strong><small>#{order.id} • {dateTime(order.createdAt)}</small></span><b>{currency(order.total)}</b></button>)}
         </div>
         {!visibleOrders.length && <Notice>Nenhum pedido neste filtro.</Notice>}
         {data.config.loyaltyActive && <LoyaltyManager notifications={data.loyalty} progress={data.loyaltyProgress} onReload={() => { dataRevision.current += 1; void load(); notifyStoreUpdated(); }} />}
@@ -230,7 +240,7 @@ function FlavorManager({ flavors, onChange }: { flavors: Flavor[]; onChange: (fl
   }
   return <section className="manager glass-card" id="flavor-manager-top">
     <div className="section-title"><div><span>Cardápio e estoque</span><h2>Gerenciamento de sabores</h2></div></div>
-    <label className="mobile-flavor-actions">Ações do admin<select aria-label="Ir para um sabor" defaultValue="" onChange={(event) => { if (event.target.value) jumpTo(event.target.value); event.target.value = ""; }}><option value="" disabled>Selecione uma ação</option><option value="novo-sabor">Gerenciamento de sabores</option>{flavors.map((flavor) => <option key={flavor.id} value={`sabor-${flavor.id}`}>{flavor.name}</option>)}</select></label>
+    <label className="mobile-flavor-actions">Ações dos Sabores<select aria-label="Ir para um sabor" defaultValue="" onChange={(event) => { if (event.target.value) jumpTo(event.target.value); event.target.value = ""; }}><option value="" disabled>Selecione uma ação</option><option value="flavor-manager-top">Voltar para o topo</option>{flavors.map((flavor) => <option key={flavor.id} value={`sabor-${flavor.id}`}>{flavor.name}</option>)}</select></label>
     {message && <Notice kind="success">{message}</Notice>}{error && <Notice kind="error">{error}</Notice>}
     <form className="manager-create" id="novo-sabor" onSubmit={create}>
       <input aria-label="Nome do novo sabor" placeholder="Nome do sabor" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} required />
@@ -311,3 +321,4 @@ function Analytics({ metrics, orders }: { metrics: Metrics; orders: Order[] }) {
   const exportQuery = new URLSearchParams({ ...(filters.from ? { from: filters.from } : {}), ...(filters.to ? { to: filters.to } : {}), ...(filters.payment ? { payment: filters.payment } : {}) }).toString();
   return <section className="manager glass-card"><div className="section-title"><div><span>Resultados</span><h2>Análise de dados</h2></div><b>{metrics.total} no histórico recente</b></div><div className="analytics-filters"><label>Data inicial<input type="date" value={filters.from} onChange={(event) => setFilters({ ...filters, from: event.target.value })} /></label><label>Data final<input type="date" value={filters.to} onChange={(event) => setFilters({ ...filters, to: event.target.value })} /></label><label>Pagamento<select value={filters.payment} onChange={(event) => setFilters({ ...filters, payment: event.target.value })}><option value="">Todos</option><option value="pago">Pagos</option><option value="aguardando_pagamento">Não pagos</option><option value="cancelado">Cancelados</option><option value="expirado">Expirados</option></select></label><label className="config-toggle"><span>Somente clientes cadastrados</span><input type="checkbox" checked={filters.registered} onChange={(event) => setFilters({ ...filters, registered: event.target.checked })} /></label><a className="success-button" href={`/api/admin/export.csv${exportQuery ? `?${exportQuery}` : ""}`}>Exportar para Excel</a></div><div className="analytics-grid"><article><span>Pedidos filtrados</span><strong>{filtered.length}</strong></article><article><span>Faturamento pago</span><strong>{currency(revenue)}</strong></article><article><span>Unidades vendidas</span><strong>{units}</strong></article><article><span>Ticket médio pago</span><strong>{currency(paid.length ? revenue / paid.length : 0)}</strong></article></div><div className="analytics-details"><article><h3>Sabores mais vendidos</h3>{[...flavorMap.entries()].sort((a,b) => b[1].quantity-a[1].quantity).map(([name,value]) => <p key={name}><span>{name}</span><strong>{value.quantity} · {currency(value.revenue)}</strong></p>)}</article><article><h3>Pedidos por dia</h3>{[...dayMap.entries()].sort((a,b) => b[0].localeCompare(a[0])).map(([day,value]) => <p key={day}><span>{new Date(`${day}T12:00:00`).toLocaleDateString("pt-BR")}</span><strong>{value.orders} pedidos · {value.units} unidades · {currency(value.revenue)}</strong></p>)}</article><article><h3>Valores pendentes</h3>{[...debtorMap.values()].sort((a,b) => b.total-a.total).map((value) => <p key={`${value.phone}-${value.name}`}><span>{value.name}</span><strong>{currency(value.total)}</strong></p>)}</article></div></section>;
 }
+
