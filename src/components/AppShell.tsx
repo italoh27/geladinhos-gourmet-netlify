@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import { useCart } from "../lib/cart";
 import { useStore } from "../lib/store";
@@ -9,6 +9,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { config, customer } = useStore();
   const location = useLocation();
   const showWhatsApp = location.pathname === "/" && config.whatsappSupportActive && config.whatsappNumber;
+
+  useEffect(() => {
+    if (!menu) return;
+    const timer = window.setTimeout(() => setMenu(false), 10000);
+    return () => window.clearTimeout(timer);
+  }, [menu]);
+
   return (
     <div className="app-shell">
       <header className="topbar">
