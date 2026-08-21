@@ -95,14 +95,14 @@ export function AdminPage() {
     api<{ customers: CustomerRow[] }>("/admin/customers").then((result) => setCustomers(result.customers)).catch((reason) => { if (localHost()) setCustomers([{ id:1,name:"Ana",phone:"11999999999",email:"ana@exemplo.com",created_at:new Date().toISOString(),order_count:3,total_paid:75,progress_5:4,progress_7:8,rewards_5:0,rewards_7:1 }]); else setError(reason.message); });
   }, [tab, customers.length]);
 
-  const visibleOrders = useMemo(() => (data?.orders || []).filter((order) => {
-    const date = order.createdAt.slice(0, 10);
-    if (orderDateFilter && date !== orderDateFilter) return false;
+  const dayOrders = useMemo(() => (data?.orders || []).filter((order) => order.createdAt.slice(0, 10) === orderDateFilter), [data?.orders, orderDateFilter]);
+
+  const visibleOrders = useMemo(() => dayOrders.filter((order) => {
     if (filter === "pagos") return order.paymentStatus === "pago";
     if (filter === "nao_pagos") return order.paymentStatus === "aguardando_pagamento";
     if (filter === "cancelados") return order.status === "cancelado" || ["cancelado", "expirado"].includes(order.paymentStatus);
     return true;
-  }), [data?.orders, filter, orderDateFilter]);
+  }), [dayOrders, filter]);
 
   async function updateOrder(order: Order, change: { status?: string; paymentStatus?: string }) {
     try {
@@ -139,8 +139,8 @@ export function AdminPage() {
       {tab === "orders" && <>
         <div className="metrics-bar glass-card">
           {[
-            ["todos", "Todos", data.metrics.total], ["nao_pagos", "Não pagos", data.metrics.pending],
-            ["pagos", "Pagos", data.metrics.paid], ["cancelados", "Cancelados", data.metrics.cancelled],
+            ["todos", "Todos", dayOrders.length], ["nao_pagos", "Não pagos", dayOrders.filter((order) => order.paymentStatus === "aguardando_pagamento").length],
+            ["pagos", "Pagos", dayOrders.filter((order) => order.paymentStatus === "pago").length], ["cancelados", "Cancelados", dayOrders.filter((order) => order.status === "cancelado" || ["cancelado", "expirado"].includes(order.paymentStatus)).length],
           ].map(([key, label, value]) => <button type="button" key={String(key)} className={filter === key ? "active" : ""} onClick={() => setFilter(String(key))}><span>{label}</span><strong>{value}</strong></button>)}
         </div>
         <div className="analytics-filters glass-card order-date-filters">
