@@ -41,7 +41,7 @@ export function AdminPage() {
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
   const [tab, setTab] = useState<Tab>("orders");
   const [filter, setFilter] = useState("todos");
-  const [orderDateFilter, setOrderDateFilter] = useState({ from: "", to: "" });
+  const [orderDateFilter, setOrderDateFilter] = useState("");
   const [openOrder, setOpenOrder] = useState<Order | null>(null);
   const [editingOrder, setEditingOrder] = useState(false);
   const [error, setError] = useState("");
@@ -87,8 +87,7 @@ export function AdminPage() {
 
   const visibleOrders = useMemo(() => (data?.orders || []).filter((order) => {
     const date = order.createdAt.slice(0, 10);
-    if (orderDateFilter.from && date < orderDateFilter.from) return false;
-    if (orderDateFilter.to && date > orderDateFilter.to) return false;
+    if (orderDateFilter && date !== orderDateFilter) return false;
     if (filter === "pagos") return order.paymentStatus === "pago";
     if (filter === "nao_pagos") return order.paymentStatus === "aguardando_pagamento";
     if (filter === "cancelados") return order.status === "cancelado" || ["cancelado", "expirado"].includes(order.paymentStatus);
@@ -135,9 +134,8 @@ export function AdminPage() {
           ].map(([key, label, value]) => <button type="button" key={String(key)} className={filter === key ? "active" : ""} onClick={() => setFilter(String(key))}><span>{label}</span><strong>{value}</strong></button>)}
         </div>
         <div className="analytics-filters glass-card order-date-filters">
-          <label>Data inicial<input type="date" value={orderDateFilter.from} onChange={(event) => setOrderDateFilter({ ...orderDateFilter, from: event.target.value })} /></label>
-          <label>Data final<input type="date" value={orderDateFilter.to} onChange={(event) => setOrderDateFilter({ ...orderDateFilter, to: event.target.value })} /></label>
-          <button type="button" className="ghost-button" onClick={() => setOrderDateFilter({ from: "", to: "" })}>Limpar datas</button>
+          <label>Data do pedido<input type="date" value={orderDateFilter} onChange={(event) => setOrderDateFilter(event.target.value)} /></label>
+          <button type="button" className="ghost-button" onClick={() => setOrderDateFilter("")}>Limpar data</button>
         </div>
         <div className="admin-order-grid">
           {visibleOrders.map((order) => <button type="button" className={`admin-order-row glass-card ${order.paymentStatus === "pago" ? "paid" : ""}`} key={order.id} onClick={() => { setOpenOrder(order); setEditingOrder(false); }}><i /><span><strong>{order.customer.name}</strong><small>#{order.id} · {dateTime(order.createdAt)}</small></span><b>{currency(order.total)}</b></button>)}
