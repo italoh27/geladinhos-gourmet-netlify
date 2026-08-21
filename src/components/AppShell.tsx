@@ -12,7 +12,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!menu) return;
-    const timer = window.setTimeout(() => setMenu(false), 10000);
+    const timer = window.setTimeout(() => setMenu(false), 3000);
     return () => window.clearTimeout(timer);
   }, [menu]);
 

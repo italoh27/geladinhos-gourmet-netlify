@@ -12,6 +12,8 @@ type StoreContextValue = StorePayload & {
 
 const StoreContext = createContext<StoreContextValue | null>(null);
 const STORE_UPDATED_EVENT = "store-updated";
+const STORE_CACHE_KEY = "geladinhos-store-cache";
+const STORE_CACHE_TTL_MS = 30_000;
 
 const empty: StorePayload = {
   config: {
@@ -28,11 +30,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<StorePayload>(empty);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [lastLoadedAt, setLastLoadedAt] = useState(0);
+
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem(STORE_CACHE_KEY);
+      if (!cached) return;
+      const parsed = JSON.parse(cached) as { timestamp?: number; data?: StorePayload };
+      if (!parsed?.data || !parsed.timestamp) return;
+      if (Date.now() - parsed.timestamp > STORE_CACHE_TTL_MS) return;
+      setData(parsed.data);
+      setLoading(false);
+      setLastLoadedAt(parsed.timestamp);
+    } catch {
+      // Cache inválido: seguimos com carregamento normal.
+    }
+  }, []);
 
   const reload = useCallback(async () => {
     setError("");
     try {
-      setData(await api<StorePayload>("/store"));
+      const next = await api<StorePayload>("/store");
+      setData(next);
+      const timestamp = Date.now();
+      setLastLoadedAt(timestamp);
+      try {
+        localStorage.setItem(STORE_CACHE_KEY, JSON.stringify({ timestamp, data: next }));
+      } catch {
+        // Se o navegador bloquear storage, seguimos normalmente.
+      }
     } catch (reason) {
       if (["localhost", "127.0.0.1"].includes(window.location.hostname)) {
         setData(localDemoStore);
@@ -47,14 +73,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { void reload(); }, [reload]);
   useEffect(() => {
-    const refresh = () => void reload();
+    const refresh = () => {
+      if (Date.now() - lastLoadedAt < 5000) return;
+      void reload();
+    };
     window.addEventListener(STORE_UPDATED_EVENT, refresh);
     window.addEventListener("focus", refresh);
     return () => {
       window.removeEventListener(STORE_UPDATED_EVENT, refresh);
       window.removeEventListener("focus", refresh);
     };
-  }, [reload]);
+  }, [reload, lastLoadedAt]);
   const value = useMemo<StoreContextValue>(() => ({
     ...data, loading, error, reload,
     setCustomer(customer) { setData((current) => ({ ...current, customer })); },
