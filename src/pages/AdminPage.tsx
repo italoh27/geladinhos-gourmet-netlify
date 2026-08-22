@@ -23,6 +23,7 @@ const todayISO = () => {
   const day = String(now.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 };
+const ADMIN_NOTIFICATIONS_KEY = "geladinhos-admin-notifications";
 const ADMIN_OVERVIEW_CACHE_KEY = "geladinhos-admin-overview-cache";
 const ADMIN_OVERVIEW_CACHE_TTL_MS = 20_000;
 function readCachedOverview() {
@@ -69,6 +70,9 @@ export function AdminPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(!cachedOverview);
   const [notifications, setNotifications] = useState(false);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(() => {
+    try { return localStorage.getItem(ADMIN_NOTIFICATIONS_KEY) === "1"; } catch { return false; }
+  });
   const dataRevision = useRef(0);
 
   const updateOverview = useCallback((updater: (current: Overview) => Overview) => {
@@ -148,13 +152,22 @@ export function AdminPage() {
     setNotifications(permission === "granted");
   }
 
+  function setNotificationsPreference(next: boolean) {
+    setNotificationsEnabled(next);
+    try {
+      localStorage.setItem(ADMIN_NOTIFICATIONS_KEY, next ? "1" : "0");
+    } catch {
+      // Preferimos não bloquear a UI se storage falhar.
+    }
+  }
+
   if (loading) return <Loading label="Abrindo o painel" />;
   if (!data) return <section className="narrow-page"><Notice kind="error">{error}</Notice></section>;
   return (
-    <section className="admin-page page-stack">
+      <section className="admin-page page-stack">
       <header className="admin-header glass-card">
-        <div><span>Painel da loja</span><h1>{data.config.storeName}</h1><p>Um único estoque, todos os pedidos em um só lugar.</p></div>
-        <div className="admin-header-actions"><button type="button" className={notifications ? "success-button" : "danger-button"} onClick={enableNotifications}>{notifications ? "Notificações ativadas" : "Ativar notificações"}</button><button type="button" className="ghost-button" onClick={async () => { try { await post("/auth/logout"); } finally { navigate("/admin/login"); } }}>Sair</button></div>
+        <div><span>Painel da loja</span><h1>{data.config.storeName}</h1></div>
+        <div className="admin-header-actions"><button type="button" className="ghost-button" onClick={async () => { try { await post("/auth/logout"); } finally { navigate("/admin/login"); } }}>Sair</button></div>
       </header>
       <label className="mobile-admin-actions">Ações do admin<select value={tab} onChange={(event) => setTab(event.target.value as Tab)}><option value="orders">Pedidos</option><option value="quick">Pedido rápido</option><option value="flavors">Gerenciamento de sabores</option><option value="config">Configurações</option><option value="customers">Clientes</option><option value="analytics">Análise de dados</option></select></label>
       <nav className="admin-tabs" aria-label="Áreas do painel">
@@ -176,13 +189,13 @@ export function AdminPage() {
         <div className="admin-order-grid">
           {visibleOrders.map((order) => <button type="button" className={`admin-order-row glass-card ${order.paymentStatus === "pago" ? "paid" : ""}`} key={order.id} onClick={() => { setOpenOrder(order); setEditingOrder(false); }}><i /><span><strong>{order.customer.name}</strong><small>#{order.id} • {dateTime(order.createdAt)}</small></span><b>{currency(order.total)}</b></button>)}
         </div>
-        {!visibleOrders.length && <Notice>Nenhum pedido neste filtro.</Notice>}
+        {!visibleOrders.length && <Notice>Nenhum pedido no momento.</Notice>}
         {data.config.loyaltyActive && <LoyaltyManager notifications={data.loyalty} progress={data.loyaltyProgress} onReload={() => { dataRevision.current += 1; void load(); notifyStoreUpdated(); }} />}
       </>}
 
       {tab === "quick" && <QuickOrder flavors={data.flavors} onCreated={(order) => { updateOverview((current) => { const orders = [order, ...current.orders.filter((item) => item.id !== order.id)]; return { ...current, orders, metrics: metricsFromOrders(orders) }; }); notifyStoreUpdated(); setTab("orders"); void load(true); }} />}
       {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => { updateOverview((current) => ({ ...current, flavors })); notifyStoreUpdated(); }} />}
-      {tab === "config" && <ConfigManager config={data.config} onChange={(config) => { updateOverview((current) => ({ ...current, config })); notifyStoreUpdated(); void reloadStore(); }} />}
+      {tab === "config" && <ConfigManager config={data.config} onChange={(config) => { updateOverview((current) => ({ ...current, config })); notifyStoreUpdated(); void reloadStore(); }} notificationsEnabled={notificationsEnabled} onNotificationsChange={setNotificationsPreference} onEnableNotifications={enableNotifications} />}
       {tab === "customers" && <CustomerManager customers={customers} onChange={(rows) => { setCustomers(rows); notifyStoreUpdated(); }} />}
       {tab === "analytics" && <Analytics metrics={data.metrics} orders={data.orders} />}
 
@@ -295,10 +308,10 @@ function FlavorEditor({ flavor, onSave }: { flavor: Flavor; onSave: (flavor: Fla
   </article>;
 }
 
-function ConfigManager({ config, onChange }: { config: StoreConfig; onChange: (config: StoreConfig) => void }) {
+function ConfigManager({ config, onChange, notificationsEnabled, onNotificationsChange, onEnableNotifications }: { config: StoreConfig; onChange: (config: StoreConfig) => void; notificationsEnabled: boolean; onNotificationsChange: (enabled: boolean) => void; onEnableNotifications: () => Promise<void> | void }) {
   const [value, setValue] = useState(config); const [saved, setSaved] = useState(false); const [error, setError] = useState(""); const [saving, setSaving] = useState(false);
   const toggles: Array<[keyof StoreConfig,string]> = [["open","Loja aberta"],["requireRegistration","Exigir cadastro"],["requireAddress","Exigir endereço"],["infinitePayActive","InfinitePay"],["paymentBeforeOrder","Criar pedido somente após pagamento"],["manualPixActive","Pix manual"],["whatsappSupportActive","Fale conosco"],["loyaltyActive","Campanha de fidelidade"],["deliveryEnabled","Realizar entrega"],["freeDelivery","Entrega grátis"]];
-  return <section className="manager glass-card"><div className="section-title"><div><span>Operação única</span><h2>Configuração da loja</h2></div></div>{saved && <Notice kind="success">Configurações salvas.</Notice>}{error && <Notice kind="error">{error}</Notice>}<div className="config-list"><label>Nome da loja<input value={value.storeName} onChange={(e) => { setSaved(false); setValue({ ...value, storeName: e.target.value }); }} /></label><label className="config-message"><span>Mensagem quando a loja estiver fechada</span><textarea rows={3} value={value.closedMessage || ""} onChange={(e) => { setSaved(false); setValue({ ...value, closedMessage: e.target.value }); }} /></label>{toggles.map(([key,label]) => <label className="config-toggle" key={key}><span>{label}</span><input type="checkbox" checked={Boolean(value[key])} onChange={(e) => { setSaved(false); setValue({ ...value, [key]: e.target.checked }); }} /></label>)}<label className="number-selector"><span>Valor da entrega</span><QuantityControl value={value.deliveryFee} min={0} max={999} step={0.5} formatValue={currency} label="Valor da entrega" onChange={(deliveryFee) => { setSaved(false); setValue({ ...value, deliveryFee }); }} /></label><label>WhatsApp da loja<input value={value.whatsappNumber} onChange={(e) => { setSaved(false); setValue({ ...value, whatsappNumber: e.target.value }); }} /></label><label>Chave Pix<input value={value.pix?.key || ""} onChange={(e) => { setSaved(false); setValue({ ...value, pix: { key: e.target.value, name: value.pix?.name || "", bank: value.pix?.bank || "" } }); }} /></label><button type="button" className="primary-button" disabled={saving} onClick={async () => { setSaving(true); setSaved(false); setError(""); try { const result = await patch<{ config: StoreConfig }>("/admin/config", { ...value, pixKey: value.pix?.key || "", pixName: value.pix?.name || "", pixBank: value.pix?.bank || "" }); setValue(result.config); onChange(result.config); setSaved(true); } catch (reason) { setError(actionError(reason, "Não foi possível salvar as configurações.")); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar configurações"}</button></div><AdminPasswordForm /></section>;
+  return <section className="manager glass-card"><div className="section-title"><div><span>Operação única</span><h2>Configuração da loja</h2></div></div>{saved && <Notice kind="success">Configurações salvas.</Notice>}{error && <Notice kind="error">{error}</Notice>}<div className="config-list"><label className="config-toggle"><span>Notificações do painel</span><input type="checkbox" checked={notificationsEnabled} onChange={(e) => { onNotificationsChange(e.target.checked); if (e.target.checked && "Notification" in window && Notification.permission !== "granted") void onEnableNotifications(); }} /></label><label>Nome da loja<input value={value.storeName} onChange={(e) => { setSaved(false); setValue({ ...value, storeName: e.target.value }); }} /></label><label className="config-message"><span>Mensagem quando a loja estiver fechada</span><textarea rows={3} value={value.closedMessage || ""} onChange={(e) => { setSaved(false); setValue({ ...value, closedMessage: e.target.value }); }} /></label>{toggles.map(([key,label]) => <label className="config-toggle" key={key}><span>{label}</span><input type="checkbox" checked={Boolean(value[key])} onChange={(e) => { setSaved(false); setValue({ ...value, [key]: e.target.checked }); }} /></label>)}<label className="number-selector"><span>Valor da entrega</span><QuantityControl value={value.deliveryFee} min={0} max={999} step={0.5} formatValue={currency} label="Valor da entrega" onChange={(deliveryFee) => { setSaved(false); setValue({ ...value, deliveryFee }); }} /></label><label>WhatsApp da loja<input value={value.whatsappNumber} onChange={(e) => { setSaved(false); setValue({ ...value, whatsappNumber: e.target.value }); }} /></label><label>Chave Pix<input value={value.pix?.key || ""} onChange={(e) => { setSaved(false); setValue({ ...value, pix: { key: e.target.value, name: value.pix?.name || "", bank: value.pix?.bank || "" } }); }} /></label><button type="button" className="primary-button" disabled={saving} onClick={async () => { setSaving(true); setSaved(false); setError(""); try { const result = await patch<{ config: StoreConfig }>("/admin/config", { ...value, pixKey: value.pix?.key || "", pixName: value.pix?.name || "", pixBank: value.pix?.bank || "" }); setValue(result.config); onChange(result.config); setSaved(true); } catch (reason) { setError(actionError(reason, "Não foi possível salvar as configurações.")); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar configurações"}</button></div><AdminPasswordForm /></section>;
 }
 
 function AdminPasswordForm() {
@@ -347,4 +360,5 @@ function Analytics({ metrics, orders }: { metrics: Metrics; orders: Order[] }) {
   const exportQuery = new URLSearchParams({ ...(filters.from ? { from: filters.from } : {}), ...(filters.to ? { to: filters.to } : {}), ...(filters.payment ? { payment: filters.payment } : {}) }).toString();
   return <section className="manager glass-card"><div className="section-title"><div><span>Resultados</span><h2>Análise de dados</h2></div><b>{metrics.total} no histórico recente</b></div><div className="analytics-filters"><label>Data inicial<input type="date" value={filters.from} onChange={(event) => setFilters({ ...filters, from: event.target.value })} /></label><label>Data final<input type="date" value={filters.to} onChange={(event) => setFilters({ ...filters, to: event.target.value })} /></label><label>Pagamento<select value={filters.payment} onChange={(event) => setFilters({ ...filters, payment: event.target.value })}><option value="">Todos</option><option value="pago">Pagos</option><option value="aguardando_pagamento">Não pagos</option><option value="cancelado">Cancelados</option><option value="expirado">Expirados</option></select></label><label className="config-toggle"><span>Somente clientes cadastrados</span><input type="checkbox" checked={filters.registered} onChange={(event) => setFilters({ ...filters, registered: event.target.checked })} /></label><a className="success-button" href={`/api/admin/export.csv${exportQuery ? `?${exportQuery}` : ""}`}>Exportar para Excel</a></div><div className="analytics-grid"><article><span>Pedidos filtrados</span><strong>{filtered.length}</strong></article><article><span>Faturamento pago</span><strong>{currency(revenue)}</strong></article><article><span>Unidades vendidas</span><strong>{units}</strong></article><article><span>Ticket médio pago</span><strong>{currency(paid.length ? revenue / paid.length : 0)}</strong></article></div><div className="analytics-details"><article><h3>Sabores mais vendidos</h3>{[...flavorMap.entries()].sort((a,b) => b[1].quantity-a[1].quantity).map(([name,value]) => <p key={name}><span>{name}</span><strong>{value.quantity} · {currency(value.revenue)}</strong></p>)}</article><article><h3>Pedidos por dia</h3>{[...dayMap.entries()].sort((a,b) => b[0].localeCompare(a[0])).map(([day,value]) => <p key={day}><span>{new Date(`${day}T12:00:00`).toLocaleDateString("pt-BR")}</span><strong>{value.orders} pedidos · {value.units} unidades · {currency(value.revenue)}</strong></p>)}</article><article><h3>Valores pendentes</h3>{[...debtorMap.values()].sort((a,b) => b.total-a.total).map((value) => <p key={`${value.phone}-${value.name}`}><span>{value.name}</span><strong>{currency(value.total)}</strong></p>)}</article></div></section>;
 }
+
 
