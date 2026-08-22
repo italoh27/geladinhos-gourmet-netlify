@@ -1,6 +1,7 @@
 import { query, transaction } from "./db";
 import { commitStock, getOrder } from "./orders";
 import { processOrderLoyalty } from "./loyalty";
+import { notifyN8n } from "./n8n";
 
 type CheckoutOrder = Awaited<ReturnType<typeof getOrder>> & {
   id: number;
@@ -143,6 +144,18 @@ export async function applyInfinitePayStatus(orderId: number, payload: Record<st
       [orderId, transactionNsu, paid ? (stockCommitted ? "paid" : "paid_stock_conflict") : "pending", JSON.stringify({ ...payload, receipt_url: receiptUrl })],
     );
     if (paid && stockCommitted && order.customer_id) await processOrderLoyalty(client, orderId);
+    if (paid) {
+      void notifyN8n({
+        event: "order.paid",
+        source: "payment_webhook",
+        order: {
+          id: orderId,
+          payment_status: "pago",
+          status: "pendente",
+          total: Number(order.total),
+        },
+      });
+    }
     return paid;
   });
 }

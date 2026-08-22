@@ -5,6 +5,7 @@ import { clearSessionCookie, createSession, deleteSession, getSession, hashPassw
 import { query, transaction } from "./_shared/db";
 import { commitStock, getOrder, releaseExpiredReservations, releaseStock, returnStock } from "./_shared/orders";
 import { applyInfinitePayStatus, checkInfinitePay, createInfinitePayCheckout, infinitePayEnabled } from "./_shared/payment";
+import { notifyN8n } from "./_shared/n8n";
 import { recoveryEmailEnabled, sendPasswordResetCode } from "./_shared/email";
 import { deliverLoyaltyReward, processOrderLoyalty, reverseOrderLoyalty, setLoyaltyProgress } from "./_shared/loyalty";
 
@@ -422,6 +423,7 @@ async function handleCheckout(request: Request) {
   }
 
   const publicToken = randomBytes(24).toString("base64url");
+  const orderSummary = { subtotal: 0, deliveryFee: config.delivery_enabled && !config.free_delivery ? money(config.delivery_fee) : 0, onlinePayment: config.infinitepay_active && infinitePayEnabled() };
   const orderId = await transaction(async (client) => {
     const ids = [...grouped.keys()];
     const selected = await client.query<{ id: number; name: string; price: string; stock: number; active: boolean; image_url: string }>(
@@ -437,9 +439,8 @@ async function handleCheckout(request: Request) {
       if (Number(flavor.stock) < quantity) throw new HttpError(409, `Restam somente ${flavor.stock} unidade(s) de ${flavor.name}.`);
       subtotalCents += Math.round(Number(flavor.price) * 100) * quantity;
     }
-    const deliveryFee = config.delivery_enabled && !config.free_delivery ? money(config.delivery_fee) : 0;
-    const onlinePayment = config.infinitepay_active && infinitePayEnabled();
-    const visible = !(config.payment_before_order && onlinePayment);
+    orderSummary.subtotal = subtotalCents / 100;
+    const visible = !(config.payment_before_order && orderSummary.onlinePayment);
     const created = await client.query<{ id: number }>(
       `INSERT INTO orders (
         public_token,customer_id,customer_name,customer_phone,customer_email,postal_code,street,number,neighborhood,city,
@@ -448,7 +449,7 @@ async function handleCheckout(request: Request) {
       [
         publicToken, session?.customer_id || null, customerName, customerPhone, customerEmail,
         postalCode, street, number, neighborhood, city, cleanText(address.complement, 150), cleanText(address.reference, 150),
-        subtotalCents / 100, deliveryFee, subtotalCents / 100 + deliveryFee, visible,
+        subtotalCents / 100, orderSummary.deliveryFee, subtotalCents / 100 + orderSummary.deliveryFee, visible,
       ],
     );
     const id = Number(created.rows[0].id);
@@ -461,6 +462,18 @@ async function handleCheckout(request: Request) {
       );
     }
     return id;
+  });
+  void notifyN8n({
+    event: "order.created",
+    source: session?.customer_id ? "web" : "admin",
+    order: {
+      id: orderId,
+      customer_name: customerName,
+      customer_phone: customerPhone,
+      payment_status: orderSummary.onlinePayment ? "aguardando_pagamento" : "pago",
+      status: "pendente",
+      total: orderSummary.subtotal + orderSummary.deliveryFee,
+    },
   });
 
   let checkoutUrl = "";
