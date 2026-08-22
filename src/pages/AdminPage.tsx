@@ -166,8 +166,8 @@ export function AdminPage() {
   return (
       <section className="admin-page page-stack">
       <header className="admin-header glass-card">
-        <div><span>Painel da loja</span><h1>{data.config.storeName}</h1></div>
-        <div className="admin-header-actions"><button type="button" className="ghost-button" onClick={async () => { try { await post("/auth/logout"); } finally { navigate("/admin/login"); } }}>Sair</button></div>
+        <div><span>Painel da loja</span></div>
+        <div className="admin-header-actions"><button type="button" className="header-compact-button" onClick={async () => { try { await post("/auth/logout"); } finally { navigate("/admin/login"); } }}>Sair</button></div>
       </header>
       <label className="mobile-admin-actions">Ações do admin<select value={tab} onChange={(event) => setTab(event.target.value as Tab)}><option value="orders">Pedidos</option><option value="quick">Pedido rápido</option><option value="flavors">Gerenciamento de sabores</option><option value="config">Configurações</option><option value="customers">Clientes</option><option value="analytics">Análise de dados</option></select></label>
       <nav className="admin-tabs" aria-label="Áreas do painel">
