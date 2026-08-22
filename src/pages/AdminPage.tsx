@@ -16,7 +16,13 @@ type Tab = "orders" | "quick" | "flavors" | "config" | "customers" | "analytics"
 const statusLabel: Record<string, string> = { pendente: "Recebido", em_preparacao: "Em preparação", saiu_entrega: "Saiu para entrega", entregue: "Entregue", cancelado: "Cancelado" };
 const localHost = () => ["localhost", "127.0.0.1"].includes(window.location.hostname);
 const actionError = (reason: unknown, fallback: string) => reason instanceof Error ? reason.message : fallback;
-const todayISO = () => new Date().toISOString().slice(0, 10);
+const todayISO = () => {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 const ADMIN_OVERVIEW_CACHE_KEY = "geladinhos-admin-overview-cache";
 const ADMIN_OVERVIEW_CACHE_TTL_MS = 20_000;
 function readCachedOverview() {
