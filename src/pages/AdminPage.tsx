@@ -187,7 +187,7 @@ export function AdminPage() {
           <button type="button" className="ghost-button" onClick={() => setOrderDateFilter("")}>Limpar data</button>
         </div>
         <div className="admin-order-grid">
-          {visibleOrders.map((order) => <button type="button" className={`admin-order-row glass-card ${order.paymentStatus === "pago" ? "paid" : ""}`} key={order.id} onClick={() => { setOpenOrder(order); setEditingOrder(false); }}><i /><span><strong>{order.customer.name}</strong><small>#{order.id} • {dateTime(order.createdAt)}</small></span><b>{currency(order.total)}</b></button>)}
+          {visibleOrders.map((order) => <button type="button" className={`admin-order-row glass-card ${order.paymentStatus === "pago" ? "paid" : ""}`} key={order.id} onClick={() => { setOpenOrder(order); setEditingOrder(false); }}><i /><span><strong>{order.customer.name}</strong><small>#{order.id} • {dateTime(order.createdAt)}</small></span><b className={`admin-order-status-pill status-${order.status}`}>{statusLabel[order.status]}</b><strong className="admin-order-total">{currency(order.total)}</strong></button>)}
         </div>
         {!visibleOrders.length && <Notice>Nenhum pedido no momento.</Notice>}
         {data.config.loyaltyActive && <LoyaltyManager notifications={data.loyalty} progress={data.loyaltyProgress} onReload={() => { dataRevision.current += 1; void load(); notifyStoreUpdated(); }} />}
