@@ -17,6 +17,20 @@ const statusLabel: Record<string, string> = { pendente: "Recebido", em_preparaca
 const localHost = () => ["localhost", "127.0.0.1"].includes(window.location.hostname);
 const actionError = (reason: unknown, fallback: string) => reason instanceof Error ? reason.message : fallback;
 const todayISO = () => new Date().toISOString().slice(0, 10);
+const ADMIN_OVERVIEW_CACHE_KEY = "geladinhos-admin-overview-cache";
+const ADMIN_OVERVIEW_CACHE_TTL_MS = 20_000;
+function readCachedOverview() {
+  try {
+    const cached = localStorage.getItem(ADMIN_OVERVIEW_CACHE_KEY);
+    if (!cached) return null;
+    const parsed = JSON.parse(cached) as { timestamp?: number; data?: Overview };
+    if (!parsed?.data || !parsed.timestamp) return null;
+    if (Date.now() - parsed.timestamp > ADMIN_OVERVIEW_CACHE_TTL_MS) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 function metricsFromOrders(orders: Order[]): Metrics {
   return {
     total: orders.length,
@@ -38,7 +52,8 @@ function demoOverview(): Overview {
 export function AdminPage() {
   const navigate = useNavigate();
   const { reload: reloadStore } = useStore();
-  const [data, setData] = useState<Overview | null>(null);
+  const cachedOverview = typeof window === "undefined" ? null : readCachedOverview();
+  const [data, setData] = useState<Overview | null>(cachedOverview?.data || null);
   const [customers, setCustomers] = useState<CustomerRow[]>([]);
   const [tab, setTab] = useState<Tab>("orders");
   const [filter, setFilter] = useState("todos");
@@ -46,7 +61,7 @@ export function AdminPage() {
   const [openOrder, setOpenOrder] = useState<Order | null>(null);
   const [editingOrder, setEditingOrder] = useState(false);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedOverview);
   const [notifications, setNotifications] = useState(false);
   const dataRevision = useRef(0);
 
@@ -63,6 +78,11 @@ export function AdminPage() {
       setData((current) => {
         if (quiet && notifications && current && next.metrics.total > current.metrics.total && "Notification" in window && Notification.permission === "granted") {
           new Notification("Novo pedido", { body: "Um novo pedido chegou na loja." });
+        }
+        try {
+          localStorage.setItem(ADMIN_OVERVIEW_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data: next }));
+        } catch {
+          // Cache opcional.
         }
         return next;
       });

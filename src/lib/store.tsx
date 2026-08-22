@@ -15,6 +15,19 @@ const STORE_UPDATED_EVENT = "store-updated";
 const STORE_CACHE_KEY = "geladinhos-store-cache";
 const STORE_CACHE_TTL_MS = 30_000;
 
+function readCachedStore() {
+  try {
+    const cached = localStorage.getItem(STORE_CACHE_KEY);
+    if (!cached) return null;
+    const parsed = JSON.parse(cached) as { timestamp?: number; data?: StorePayload };
+    if (!parsed?.data || !parsed.timestamp) return null;
+    if (Date.now() - parsed.timestamp > STORE_CACHE_TTL_MS) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
 const empty: StorePayload = {
   config: {
     storeName: "Geladinhos Gourmet", open: true, requireRegistration: false, requireAddress: true,
@@ -27,23 +40,17 @@ const empty: StorePayload = {
 };
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [data, setData] = useState<StorePayload>(empty);
-  const [loading, setLoading] = useState(true);
+  const cached = typeof window === "undefined" ? null : readCachedStore();
+  const [data, setData] = useState<StorePayload>(cached?.data || empty);
+  const [loading, setLoading] = useState(!cached);
   const [error, setError] = useState("");
-  const [lastLoadedAt, setLastLoadedAt] = useState(0);
+  const [lastLoadedAt, setLastLoadedAt] = useState(cached?.timestamp || 0);
 
   useEffect(() => {
-    try {
-      const cached = localStorage.getItem(STORE_CACHE_KEY);
-      if (!cached) return;
-      const parsed = JSON.parse(cached) as { timestamp?: number; data?: StorePayload };
-      if (!parsed?.data || !parsed.timestamp) return;
-      if (Date.now() - parsed.timestamp > STORE_CACHE_TTL_MS) return;
-      setData(parsed.data);
+    if (cached?.data && cached.timestamp) {
+      setData(cached.data);
       setLoading(false);
-      setLastLoadedAt(parsed.timestamp);
-    } catch {
-      // Cache inválido: seguimos com carregamento normal.
+      setLastLoadedAt(cached.timestamp);
     }
   }, []);
 
