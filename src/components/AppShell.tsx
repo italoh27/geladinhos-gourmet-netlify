@@ -12,7 +12,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!menu) return;
-    const timer = window.setTimeout(() => setMenu(false), 2000);
+    const timer = window.setTimeout(() => setMenu(false), 3000);
     return () => window.clearTimeout(timer);
   }, [menu]);
 
@@ -21,7 +21,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <header className="topbar">
         <button className="icon-button" type="button" onClick={() => setMenu((value) => !value)} aria-expanded={menu} aria-label="Abrir menu">☰</button>
         <Link className="brand" to="/">{config.storeName}</Link>
-        <Link className="cart-button" to="/carrinho" aria-label={`Carrinho com ${count} itens`}><span>🛒</span>{count > 0 && <b>{count}</b>}</Link>
+        <Link className="cart-button" to="/carrinho" aria-label={`Carrinho com ${count} itens`}><span className="cart-icon" aria-hidden="true">🛒</span>{count > 0 && <b>{count}</b>}</Link>
         {menu && (
           <nav className="menu-panel" aria-label="Menu principal">
             <NavLink to="/" onClick={() => setMenu(false)}>Loja</NavLink>
