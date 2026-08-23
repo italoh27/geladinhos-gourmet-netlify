@@ -839,7 +839,8 @@ async function handleAdminQuickOrder(request: Request) {
     try {
       checkoutUrl = await createInfinitePayCheckout(orderId);
     } catch (error) {
-      console.error("Falha ao gerar checkout da InfinitePay para pedido rápido:", error);
+      await transaction(async (client) => returnStock(client, orderId, "cancelado"));
+      throw error;
     }
   }
   return json({ order: normalizeOrder((await getOrder(orderId)) as Record<string, unknown>), checkoutUrl }, { status: 201 });
