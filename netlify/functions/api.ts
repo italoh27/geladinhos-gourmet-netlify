@@ -835,7 +835,7 @@ async function handleAdminQuickOrder(request: Request) {
     return id;
   });
   let checkoutUrl = "";
-  if (paymentStatus !== "pago" && config.infinitepay_active && infinitePayEnabled()) {
+  if (paymentStatus !== "pago" && infinitePayEnabled()) {
     try {
       checkoutUrl = await createInfinitePayCheckout(orderId);
     } catch (error) {
