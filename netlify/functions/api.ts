@@ -834,7 +834,16 @@ async function handleAdminQuickOrder(request: Request) {
     if (paymentStatus === "pago" && customer.rows[0]?.id) await processOrderLoyalty(client, id);
     return id;
   });
-  return json({ order: normalizeOrder((await getOrder(orderId)) as Record<string, unknown>) }, { status: 201 });
+  let checkoutUrl = "";
+  if (paymentStatus !== "pago" && config.infinitepay_active && infinitePayEnabled()) {
+    try {
+      checkoutUrl = await createInfinitePayCheckout(orderId);
+    } catch (error) {
+      await transaction(async (client) => returnStock(client, orderId, "cancelado"));
+      throw error;
+    }
+  }
+  return json({ order: normalizeOrder((await getOrder(orderId)) as Record<string, unknown>), checkoutUrl }, { status: 201 });
 }
 
 function csvCell(value: unknown) {
