@@ -11,7 +11,7 @@ import type { Flavor, Order, StoreConfig } from "../lib/types";
 type Metrics = { total: number; paid: number; pending: number; cancelled: number; revenue: number };
 type CustomerRow = { id: number; name: string; phone: string; email: string; created_at: string; order_count: number; total_paid: number; progress_5: number; progress_7: number; rewards_5: number; rewards_7: number };
 type LoyaltyRow = { id?: number; customer_id: number; name: string; phone: string; tier?: number; quantity?: number; progress_5?: number; progress_7?: number; rewards_5?: number; rewards_7?: number };
-type Overview = { config: StoreConfig; flavors: Flavor[]; orders: Order[]; metrics: Metrics; loyalty: LoyaltyRow[]; loyaltyProgress: LoyaltyRow[] };
+type Overview = { config: StoreConfig; flavors: Flavor[]; orders: Order[]; metrics: Metrics; loyalty: LoyaltyRow[]; loyaltyProgress: LoyaltyRow[]; stockAddedToday: number };
 type Tab = "orders" | "quick" | "flavors" | "config" | "customers" | "analytics";
 const statusLabel: Record<string, string> = { pendente: "Recebido", em_preparacao: "Em preparação", saiu_entrega: "Saiu para entrega", entregue: "Entregue", cancelado: "Cancelado" };
 const localHost = () => ["localhost", "127.0.0.1"].includes(window.location.hostname);
@@ -53,7 +53,7 @@ function demoOverview(): Overview {
     [101,"Ana",38,"pago","em_preparacao"],[102,"Bruno",15,"aguardando_pagamento","pendente"],[103,"Carla",28,"pago","saiu_entrega"],
     [104,"Daniel",21,"pago","entregue"],[105,"Elisa",10,"cancelado","cancelado"],[106,"Felipe",35,"pago","pendente"],
   ].map(([id,name,total,payment,status], index) => ({ id:Number(id),token:`demo-${id}`,customerId:index+1,customer:{name:String(name),phone:"11999999999",email:`cliente${index+1}@exemplo.com`},address:{postalCode:"01001000",street:"Rua da Loja",number:String(index+10),neighborhood:"Centro",city:"São Paulo",complement:"",reference:""},status:status as Order["status"],paymentStatus:payment as Order["paymentStatus"],paymentMethod:"pix",paymentLink:"",subtotal:Number(total),deliveryFee:0,total:Number(total),stockReturned:payment==="cancelado",reservationExpiresAt:null,createdAt:now,updatedAt:now,items:[{flavorId:localDemoStore.flavors[index%localDemoStore.flavors.length].id,name:localDemoStore.flavors[index%localDemoStore.flavors.length].name,price:Number(total),quantity:1,total:Number(total)}]}));
-  return { config:localDemoStore.config,flavors:localDemoStore.flavors,orders,metrics:{total:6,paid:4,pending:1,cancelled:1,revenue:122},loyalty:[{id:1,customer_id:1,name:"Ana",phone:"11999999999",tier:7,quantity:1}],loyaltyProgress:[{customer_id:1,name:"Ana",phone:"11999999999",progress_5:4,progress_7:8,rewards_5:0,rewards_7:1}] };
+  return { config:localDemoStore.config,flavors:localDemoStore.flavors,orders,metrics:{total:6,paid:4,pending:1,cancelled:1,revenue:122},loyalty:[{id:1,customer_id:1,name:"Ana",phone:"11999999999",tier:7,quantity:1}],loyaltyProgress:[{customer_id:1,name:"Ana",phone:"11999999999",progress_5:4,progress_7:8,rewards_5:0,rewards_7:1}],stockAddedToday:0 };
 }
 
 export function AdminPage() {
@@ -181,6 +181,7 @@ export function AdminPage() {
             ["todos", "Todos", dayOrders.length], ["nao_pagos", "Não pagos", dayOrders.filter((order) => order.paymentStatus === "aguardando_pagamento").length],
             ["pagos", "Pagos", dayOrders.filter((order) => order.paymentStatus === "pago").length], ["cancelados", "Cancelados", dayOrders.filter((order) => order.status === "cancelado" || ["cancelado", "expirado"].includes(order.paymentStatus)).length],
           ].map(([key, label, value]) => <button type="button" key={String(key)} className={filter === key ? "active" : ""} onClick={() => setFilter(String(key))}><span>{label}</span><strong>{value}</strong></button>)}
+          <article className="stock-added-metric"><span>Estoque adicionado hoje</span><strong>{data.stockAddedToday}</strong></article>
         </div>
         <div className="analytics-filters glass-card order-date-filters">
           <label>Data do pedido<input type="date" value={orderDateFilter} onChange={(event) => setOrderDateFilter(event.target.value)} /></label>
@@ -194,7 +195,7 @@ export function AdminPage() {
       </>}
 
       {tab === "quick" && <QuickOrder flavors={data.flavors} onCreated={(order) => { updateOverview((current) => { const orders = [order, ...current.orders.filter((item) => item.id !== order.id)]; return { ...current, orders, metrics: metricsFromOrders(orders) }; }); notifyStoreUpdated(); setTab("orders"); void load(true); }} />}
-      {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => { updateOverview((current) => ({ ...current, flavors })); notifyStoreUpdated(); }} />}
+      {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => { updateOverview((current) => ({ ...current, flavors })); notifyStoreUpdated(); void load(true); }} />}
       {tab === "config" && <ConfigManager config={data.config} onChange={(config) => { updateOverview((current) => ({ ...current, config })); notifyStoreUpdated(); void reloadStore(); }} notificationsEnabled={notificationsEnabled} onNotificationsChange={setNotificationsPreference} onEnableNotifications={enableNotifications} />}
       {tab === "customers" && <CustomerManager customers={customers} orders={data.orders} onChange={(rows) => { setCustomers(rows); notifyStoreUpdated(); }} />}
       {tab === "analytics" && <Analytics metrics={data.metrics} orders={data.orders} />}
@@ -236,7 +237,7 @@ function OrderEditor({ order, flavors, onSave }: { order: Order; flavors: Flavor
 
 function QuickOrder({ flavors, onCreated }: { flavors: Flavor[]; onCreated: (order: Order) => void }) {
   const available = flavors.filter((flavor) => flavor.active);
-  const [form, setForm] = useState({ name: "Cliente balcão", phone: "", paymentStatus: "aguardando_pagamento", status: "pendente", deliveryFee: 0 });
+  const [form, setForm] = useState({ name: "Cliente balcão", phone: "", paymentStatus: "aguardando_pagamento", status: "pendente", deliveryFee: 0, orderDate: todayISO() });
   const [items, setItems] = useState<Array<{ flavorId: number; quantity: number }>>([{ flavorId: available[0]?.id || 0, quantity: 1 }]);
   const [error, setError] = useState("");
   async function submit(event: FormEvent) {
@@ -244,7 +245,24 @@ function QuickOrder({ flavors, onCreated }: { flavors: Flavor[]; onCreated: (ord
     try { const result = await post<{ order: Order }>("/admin/orders/quick", { ...form, items }); onCreated(result.order); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível criar o pedido."); }
   }
-  return <section className="manager glass-card"><div className="section-title"><div><span>Venda presencial</span><h2>Novo pedido rápido</h2></div></div>{error && <Notice kind="error">{error}</Notice>}<form className="auth-form" onSubmit={submit}><div className="manager-create"><input placeholder="Nome do cliente" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input placeholder="Telefone (opcional)" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /><label className="number-selector"><span>Taxa de entrega</span><QuantityControl value={form.deliveryFee} min={0} max={999} step={0.5} formatValue={currency} label="Taxa de entrega" onChange={(deliveryFee) => setForm({ ...form, deliveryFee })} /></label><select value={form.paymentStatus} onChange={(event) => setForm({ ...form, paymentStatus: event.target.value })}><option value="aguardando_pagamento">Não pago</option><option value="pago">Pago</option></select><select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}><option value="pendente">Recebido</option><option value="em_preparacao">Em preparação</option><option value="saiu_entrega">Saiu para entrega</option><option value="entregue">Entregue</option></select></div><div className="quick-items">{items.map((item, index) => <div className="quick-item" key={index}><select value={item.flavorId} onChange={(event) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, flavorId: Number(event.target.value) } : current))}>{available.map((flavor) => <option value={flavor.id} key={flavor.id}>{flavor.name} · {currency(flavor.price)} · estoque {flavor.stock}</option>)}</select><QuantityControl value={item.quantity} min={1} max={999} onChange={(quantity) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, quantity } : current))} /><button type="button" className="danger-button" onClick={() => setItems(items.filter((_, currentIndex) => currentIndex !== index))}>Remover</button></div>)}</div><div className="button-row"><button type="button" className="ghost-button" onClick={() => setItems([...items, { flavorId: available[0]?.id || 0, quantity: 1 }])}>+ Outra linha</button><button className="primary-button" disabled={!items.length}>Criar pedido</button></div></form></section>;
+  return (
+    <section className="manager glass-card">
+      <div className="section-title"><div><span>Venda presencial</span><h2>Novo pedido rápido</h2></div></div>
+      {error && <Notice kind="error">{error}</Notice>}
+      <form className="auth-form" onSubmit={submit}>
+        <div className="manager-create quick-order-fields">
+          <input placeholder="Nome do cliente" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+          <input placeholder="Telefone (opcional)" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+          <label className="quick-order-date"><span>Data do pedido</span><input type="date" value={form.orderDate} onChange={(event) => setForm({ ...form, orderDate: event.target.value })} required /></label>
+          <label className="number-selector"><span>Taxa de entrega</span><QuantityControl value={form.deliveryFee} min={0} max={999} step={0.5} formatValue={currency} label="Taxa de entrega" onChange={(deliveryFee) => setForm({ ...form, deliveryFee })} /></label>
+          <select value={form.paymentStatus} onChange={(event) => setForm({ ...form, paymentStatus: event.target.value })}><option value="aguardando_pagamento">Não pago</option><option value="pago">Pago</option></select>
+          <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}><option value="pendente">Recebido</option><option value="em_preparacao">Em preparação</option><option value="saiu_entrega">Saiu para entrega</option><option value="entregue">Entregue</option></select>
+        </div>
+        <div className="quick-items">{items.map((item, index) => <div className="quick-item" key={index}><select value={item.flavorId} onChange={(event) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, flavorId: Number(event.target.value) } : current))}>{available.map((flavor) => <option value={flavor.id} key={flavor.id}>{flavor.name} · {currency(flavor.price)} · estoque {flavor.stock}</option>)}</select><QuantityControl value={item.quantity} min={1} max={999} onChange={(quantity) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, quantity } : current))} /><button type="button" className="danger-button" onClick={() => setItems(items.filter((_, currentIndex) => currentIndex !== index))}>Remover</button></div>)}</div>
+        <div className="button-row"><button type="button" className="ghost-button" onClick={() => setItems([...items, { flavorId: available[0]?.id || 0, quantity: 1 }])}>+ Outra linha</button><button className="primary-button" disabled={!items.length}>Criar pedido</button></div>
+      </form>
+    </section>
+  );
 }
 
 function LoyaltyManager({ notifications, progress, onReload }: { notifications: LoyaltyRow[]; progress: LoyaltyRow[]; onReload: () => void }) {

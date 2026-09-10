@@ -42,6 +42,34 @@ type CheckoutInput = {
   };
 };
 
+let stockMovementsSchemaPromise: Promise<void> | null = null;
+
+async function ensureStockMovementsSchema() {
+  if (!stockMovementsSchemaPromise) {
+    stockMovementsSchemaPromise = (async () => {
+      await query(`CREATE TABLE IF NOT EXISTS stock_movements (
+        id BIGSERIAL PRIMARY KEY,
+        flavor_id BIGINT REFERENCES flavors(id) ON DELETE SET NULL,
+        quantity INTEGER NOT NULL CHECK (quantity > 0),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      await query("CREATE INDEX IF NOT EXISTS stock_movements_created_at_idx ON stock_movements (created_at DESC)");
+    })().catch((error) => {
+      stockMovementsSchemaPromise = null;
+      throw error;
+    });
+  }
+  await stockMovementsSchemaPromise;
+}
+
+function orderDate(value: unknown) {
+  const selected = cleanText(value, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(selected)) throw new HttpError(400, "Informe uma data válida para o pedido.");
+  const parsed = new Date(`${selected}T12:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== selected) throw new HttpError(400, "Informe uma data válida para o pedido.");
+  return selected;
+}
+
 function routePath(request: Request) {
   return decodeURIComponent(new URL(request.url).pathname).replace(/^\/api\/?/, "/").replace(/\/$/, "") || "/";
 }
@@ -536,7 +564,8 @@ async function handleAdminOverview(request: Request) {
   only(request, "GET");
   await requireAdmin(request);
   await releaseExpiredReservations();
-  const [config, flavors, orders, loyaltyProgress, counts, loyalty] = await Promise.all([
+  await ensureStockMovementsSchema();
+  const [config, flavors, orders, loyaltyProgress, counts, loyalty, stockAddedToday] = await Promise.all([
     storeConfig(),
     query("SELECT * FROM flavors ORDER BY active DESC,name"),
     query(
@@ -567,6 +596,11 @@ async function handleAdminOverview(request: Request) {
        FROM loyalty_notifications n JOIN customers c ON c.id=n.customer_id
        WHERE n.delivered=FALSE ORDER BY n.created_at DESC`,
     ),
+    query<{ total: number }>(
+      `SELECT COALESCE(SUM(quantity),0)::INTEGER total
+         FROM stock_movements
+        WHERE (created_at AT TIME ZONE 'America/Sao_Paulo')::DATE = (NOW() AT TIME ZONE 'America/Sao_Paulo')::DATE`,
+    ),
   ]);
   return json({
     config: { ...publicConfig(config), pix: { key: config.pix_key, name: config.pix_name, bank: config.pix_bank } },
@@ -575,6 +609,7 @@ async function handleAdminOverview(request: Request) {
     metrics: counts.rows[0],
     loyalty: loyalty.rows,
     loyaltyProgress: loyaltyProgress.rows,
+    stockAddedToday: Number(stockAddedToday.rows[0]?.total || 0),
   });
 }
 
@@ -675,33 +710,42 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
 async function handleAdminFlavor(request: Request, flavorId?: number) {
   await requireAdmin(request);
   await autoDeactivateEmptyFlavors();
+  await ensureStockMovementsSchema();
   if (request.method === "POST") {
     const data = await body<{ name: string; price: number; stock?: number; imageUrl?: string; active?: boolean }>(request);
     const name = cleanText(data.name, 100);
     if (!name) throw new HttpError(400, "Informe o nome do sabor.");
-    const result = await query(
-      "INSERT INTO flavors (name,price,stock,image_url,active) VALUES ($1,$2,$3,$4,$5) RETURNING *",
-      [name, money(data.price), Math.max(0, Number(data.stock || 0)), cleanText(data.imageUrl, 300), data.active !== false],
-    );
-    return json({ flavor: normalizeFlavor(result.rows[0]) }, { status: 201 });
+    const initialStock = Math.max(0, Math.trunc(Number(data.stock || 0)));
+    const flavor = await transaction(async (client) => {
+      const result = await client.query(
+        "INSERT INTO flavors (name,price,stock,image_url,active) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+        [name, money(data.price), initialStock, cleanText(data.imageUrl, 300), data.active !== false],
+      );
+      if (initialStock > 0) await client.query("INSERT INTO stock_movements (flavor_id,quantity) VALUES ($1,$2)", [result.rows[0].id, initialStock]);
+      return result.rows[0];
+    });
+    return json({ flavor: normalizeFlavor(flavor) }, { status: 201 });
   }
   if (!flavorId) throw new HttpError(400, "Sabor inválido.");
   if (request.method === "PATCH") {
     const data = await body<{ name?: string; price?: number; stock?: number; imageUrl?: string; active?: boolean }>(request);
-    const result = await query(
-      `UPDATE flavors SET name=COALESCE($2,name),price=COALESCE($3,price),stock=COALESCE($4,stock),
-        image_url=COALESCE($5,image_url),active=COALESCE($6,active),updated_at=NOW() WHERE id=$1 RETURNING *`,
-      [
-        flavorId, data.name === undefined ? null : cleanText(data.name, 100), data.price === undefined ? null : money(data.price),
-        data.stock === undefined ? null : Math.max(0, Math.trunc(Number(data.stock))),
-        data.imageUrl === undefined ? null : cleanText(data.imageUrl, 300), data.active === undefined ? null : Boolean(data.active),
-      ],
-    );
-    if (!result.rows[0]) throw new HttpError(404, "Sabor não encontrado.");
-    if (Number(result.rows[0].stock) === 0 && result.rows[0].active) {
-      await query("UPDATE flavors SET updated_at = NOW() WHERE id = $1", [flavorId]);
-    }
-    return json({ flavor: normalizeFlavor(result.rows[0]) });
+    const flavor = await transaction(async (client) => {
+      const current = await client.query<{ stock: number }>("SELECT stock FROM flavors WHERE id=$1 FOR UPDATE", [flavorId]);
+      if (!current.rows[0]) throw new HttpError(404, "Sabor não encontrado.");
+      const nextStock = data.stock === undefined ? null : Math.max(0, Math.trunc(Number(data.stock)));
+      const result = await client.query(
+        `UPDATE flavors SET name=COALESCE($2,name),price=COALESCE($3,price),stock=COALESCE($4,stock),
+          image_url=COALESCE($5,image_url),active=COALESCE($6,active),updated_at=NOW() WHERE id=$1 RETURNING *`,
+        [
+          flavorId, data.name === undefined ? null : cleanText(data.name, 100), data.price === undefined ? null : money(data.price),
+          nextStock, data.imageUrl === undefined ? null : cleanText(data.imageUrl, 300), data.active === undefined ? null : Boolean(data.active),
+        ],
+      );
+      const added = nextStock === null ? 0 : Math.max(0, nextStock - Number(current.rows[0].stock));
+      if (added > 0) await client.query("INSERT INTO stock_movements (flavor_id,quantity) VALUES ($1,$2)", [flavorId, added]);
+      return result.rows[0];
+    });
+    return json({ flavor: normalizeFlavor(flavor) });
   }
   throw new HttpError(405, "Método não permitido.");
 }
@@ -790,7 +834,7 @@ async function handleAdminQuickOrder(request: Request) {
   only(request, "POST");
   await requireAdmin(request);
   const data = await body<{
-    name?: string; phone?: string; paymentStatus?: string; status?: string; deliveryFee?: number; items: CartInput[];
+    name?: string; phone?: string; paymentStatus?: string; status?: string; deliveryFee?: number; orderDate?: string; items: CartInput[];
   }>(request);
   if (!Array.isArray(data.items) || !data.items.length) throw new HttpError(400, "Adicione pelo menos um sabor.");
   const grouped = new Map<number, number>();
@@ -800,6 +844,7 @@ async function handleAdminQuickOrder(request: Request) {
   const paymentStatus = data.paymentStatus === "pago" ? "pago" : "aguardando_pagamento";
   const status = ["pendente", "em_preparacao", "saiu_entrega", "entregue"].includes(String(data.status)) ? String(data.status) : "pendente";
   const deliveryFee = money(data.deliveryFee || 0);
+  const selectedOrderDate = orderDate(data.orderDate);
   const orderId = await transaction(async (client) => {
     const ids = [...grouped.keys()];
     const selected = await client.query<{ id: number; name: string; price: string; stock: number; active: boolean }>(
@@ -816,9 +861,10 @@ async function handleAdminQuickOrder(request: Request) {
     const customer = phone ? await client.query<{ id: number; email: string }>("SELECT id,email FROM customers WHERE phone=$1", [phone]) : { rows: [] };
     const created = await client.query<{ id: number }>(
       `INSERT INTO orders (public_token,customer_id,customer_name,customer_phone,customer_email,status,payment_status,
-        payment_method,subtotal,delivery_fee,total,visible_to_admin,paid_at,stock_returned)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'pedido_rapido_admin',$8,$9,$10,TRUE,CASE WHEN $7='pago' THEN NOW() ELSE NULL END,$7<>'pago') RETURNING id`,
-      [randomBytes(24).toString("base64url"), customer.rows[0]?.id || null, name, phone, customer.rows[0]?.email || "", status, paymentStatus, subtotal, deliveryFee, subtotal + deliveryFee],
+        payment_method,subtotal,delivery_fee,total,visible_to_admin,paid_at,stock_returned,created_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'pedido_rapido_admin',$8,$9,$10,TRUE,CASE WHEN $7='pago' THEN NOW() ELSE NULL END,$7<>'pago',
+         CASE WHEN $11::DATE=(NOW() AT TIME ZONE 'America/Sao_Paulo')::DATE THEN NOW() ELSE ($11::DATE + TIME '12:00') AT TIME ZONE 'America/Sao_Paulo' END) RETURNING id`,
+      [randomBytes(24).toString("base64url"), customer.rows[0]?.id || null, name, phone, customer.rows[0]?.email || "", status, paymentStatus, subtotal, deliveryFee, subtotal + deliveryFee, selectedOrderDate],
     );
     const id = Number(created.rows[0].id);
     for (const flavor of selected.rows) {
