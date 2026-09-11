@@ -198,7 +198,7 @@ export function AdminPage() {
       {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => { updateOverview((current) => ({ ...current, flavors })); notifyStoreUpdated(); void load(true); }} />}
       {tab === "config" && <ConfigManager config={data.config} onChange={(config) => { updateOverview((current) => ({ ...current, config })); notifyStoreUpdated(); void reloadStore(); }} notificationsEnabled={notificationsEnabled} onNotificationsChange={setNotificationsPreference} onEnableNotifications={enableNotifications} />}
       {tab === "customers" && <CustomerManager customers={customers} orders={data.orders} onChange={(rows) => { setCustomers(rows); notifyStoreUpdated(); }} />}
-      {tab === "analytics" && <Analytics metrics={data.metrics} orders={data.orders} />}
+      {tab === "analytics" && <Analytics metrics={data.metrics} orders={data.orders} onOrderUpdated={(order) => { updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); notifyStoreUpdated(); }} />}
 
       {openOrder && <dialog className="admin-order-dialog" open onClick={(event) => { if (event.target === event.currentTarget) { setOpenOrder(null); setEditingOrder(false); } }}>
         <article className="admin-order-detail glass-card">
@@ -351,8 +351,10 @@ function CustomerManager({ customers, orders, onChange }: { customers: CustomerR
   return <section className="manager glass-card"><div className="section-title"><div><span>Cadastros</span><h2>Clientes</h2></div><b>{customers.length}</b></div>{error && <Notice kind="error">{error}</Notice>}<div className="customer-admin-list">{customers.map((customer) => <article key={customer.id} className="customer-admin-row" onClick={() => setSelected(customer)} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelected(customer); }}><div><strong>{customer.name}</strong><span>{customer.phone} · {customer.email}</span><small>{customer.order_count} pedido(s) · {currency(customer.total_paid)}</small></div><button type="button" className="danger-button" onClick={async (event) => { event.stopPropagation(); if (!confirm(`Excluir o cadastro de ${customer.name}?`)) return; setError(""); try { await remove(`/admin/customers/${customer.id}`); onChange(customers.filter((item) => item.id !== customer.id)); if (selected?.id === customer.id) setSelected(null); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o cliente.")); } }}>Excluir</button></article>)}</div>{selected && <dialog className="admin-order-dialog" open onClick={(event) => { if (event.target === event.currentTarget) setSelected(null); }}><article className="admin-order-detail glass-card customer-history-dialog"><header><div><span>Histórico do cliente</span><h2>{selected.name}</h2><p>{selected.phone} · {selected.email}</p></div><button type="button" className="dialog-close" onClick={() => setSelected(null)} aria-label="Fechar">×</button></header><div className="customer-history-summary"><p><span>Pedidos</span><strong>{selected.order_count}</strong></p><p><span>Total pago</span><strong>{currency(selected.total_paid)}</strong></p></div><div className="customer-history-list">{selectedOrders.length ? selectedOrders.map((order) => <article key={order.id} className={`customer-history-item ${order.paymentStatus === "pago" ? "paid" : ""}`}><div><strong>Pedido #{order.id}</strong><small>{dateTime(order.createdAt)} · {statusLabel[order.status]}</small></div><b>{currency(order.total)}</b><span className={`admin-order-status-pill status-${order.status}`}>{statusLabel[order.status]}</span></article>) : <Notice>Nenhum pedido encontrado para este cliente.</Notice>}</div></article></dialog>}</section>;
 }
 
-function Analytics({ metrics, orders }: { metrics: Metrics; orders: Order[] }) {
+function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orders: Order[]; onOrderUpdated: (order: Order) => void }) {
   const [filters, setFilters] = useState({ from: "", to: "", payment: "", registered: false });
+  const [updatingOrderId, setUpdatingOrderId] = useState<number | null>(null);
+  const [error, setError] = useState("");
   const filtered = useMemo(() => orders.filter((order) => {
     const date = order.createdAt.slice(0, 10);
     if (filters.from && date < filters.from) return false;
@@ -366,23 +368,67 @@ function Analytics({ metrics, orders }: { metrics: Metrics; orders: Order[] }) {
   const units = paid.reduce((sum, order) => sum + order.items.reduce((itemSum, item) => itemSum + item.quantity, 0), 0);
   const flavorMap = new Map<string, { quantity: number; revenue: number }>();
   const dayMap = new Map<string, { orders: number; units: number; revenue: number }>();
-  const debtorMap = new Map<string, { name: string; phone: string; total: number }>();
   for (const order of filtered) {
     const day = order.createdAt.slice(0, 10);
     const currentDay = dayMap.get(day) || { orders: 0, units: 0, revenue: 0 };
     currentDay.orders += 1; currentDay.units += order.items.reduce((sum, item) => sum + item.quantity, 0); currentDay.revenue += order.total; dayMap.set(day, currentDay);
-    if (order.paymentStatus === "aguardando_pagamento") {
-      const key = order.customer.phone || order.customer.name;
-      const current = debtorMap.get(key) || { name: order.customer.name, phone: order.customer.phone, total: 0 };
-      current.total += order.total; debtorMap.set(key, current);
-    }
     if (order.paymentStatus === "pago") for (const item of order.items) {
       const current = flavorMap.get(item.name) || { quantity: 0, revenue: 0 };
       current.quantity += item.quantity; current.revenue += item.total; flavorMap.set(item.name, current);
     }
   }
+  const paymentOrders = filtered
+    .filter((order) => order.status !== "cancelado" && !["cancelado", "expirado"].includes(order.paymentStatus))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  async function togglePayment(order: Order) {
+    setUpdatingOrderId(order.id);
+    setError("");
+    try {
+      const paymentStatus = order.paymentStatus === "pago" ? "aguardando_pagamento" : "pago";
+      const result = await patch<{ order: Order }>(`/admin/orders/${order.id}`, { paymentStatus });
+      onOrderUpdated(result.order);
+    } catch (reason) {
+      setError(actionError(reason, "Não foi possível alterar o pagamento."));
+    } finally {
+      setUpdatingOrderId(null);
+    }
+  }
   const exportQuery = new URLSearchParams({ ...(filters.from ? { from: filters.from } : {}), ...(filters.to ? { to: filters.to } : {}), ...(filters.payment ? { payment: filters.payment } : {}) }).toString();
-  return <section className="manager glass-card"><div className="section-title"><div><span>Resultados</span><h2>Análise de dados</h2></div><b>{metrics.total} no histórico recente</b></div><div className="analytics-filters"><label>Data inicial<input type="date" value={filters.from} onChange={(event) => setFilters({ ...filters, from: event.target.value })} /></label><label>Data final<input type="date" value={filters.to} onChange={(event) => setFilters({ ...filters, to: event.target.value })} /></label><label>Pagamento<select value={filters.payment} onChange={(event) => setFilters({ ...filters, payment: event.target.value })}><option value="">Todos</option><option value="pago">Pagos</option><option value="aguardando_pagamento">Não pagos</option><option value="cancelado">Cancelados</option><option value="expirado">Expirados</option></select></label><label className="config-toggle"><span>Somente clientes cadastrados</span><input type="checkbox" checked={filters.registered} onChange={(event) => setFilters({ ...filters, registered: event.target.checked })} /></label><button type="button" className="ghost-button analytics-clear-button" onClick={() => setFilters({ from: "", to: "", payment: "", registered: false })}>Limpar data</button><a className="success-button" href={`/api/admin/export.csv${exportQuery ? `?${exportQuery}` : ""}`}>Exportar para Excel</a></div><div className="analytics-grid"><article><span>Pedidos filtrados</span><strong>{filtered.length}</strong></article><article><span>Faturamento pago</span><strong>{currency(revenue)}</strong></article><article><span>Unidades vendidas</span><strong>{units}</strong></article><article><span>Ticket médio pago</span><strong>{currency(paid.length ? revenue / paid.length : 0)}</strong></article></div><div className="analytics-details"><article><h3>Sabores mais vendidos</h3>{[...flavorMap.entries()].sort((a,b) => b[1].quantity-a[1].quantity).map(([name,value]) => <p key={name}><span>{name}</span><strong>{value.quantity} · {currency(value.revenue)}</strong></p>)}</article><article><h3>Pedidos por dia</h3>{[...dayMap.entries()].sort((a,b) => b[0].localeCompare(a[0])).map(([day,value]) => <p key={day}><span>{new Date(`${day}T12:00:00`).toLocaleDateString("pt-BR")}</span><strong>{value.orders} pedidos · {value.units} unidades · {currency(value.revenue)}</strong></p>)}</article><article><h3>Valores pendentes</h3>{[...debtorMap.values()].sort((a,b) => b.total-a.total).map((value) => <p key={`${value.phone}-${value.name}`}><span>{value.name}</span><strong>{currency(value.total)}</strong></p>)}</article></div></section>;
+  return (
+    <section className="manager glass-card">
+      <div className="section-title"><div><span>Resultados</span><h2>Análise de dados</h2></div><b>{metrics.total} no histórico recente</b></div>
+      <div className="analytics-filters">
+        <label>Data inicial<input type="date" value={filters.from} onChange={(event) => setFilters({ ...filters, from: event.target.value })} /></label>
+        <label>Data final<input type="date" value={filters.to} onChange={(event) => setFilters({ ...filters, to: event.target.value })} /></label>
+        <label>Pagamento<select value={filters.payment} onChange={(event) => setFilters({ ...filters, payment: event.target.value })}><option value="">Todos</option><option value="pago">Pagos</option><option value="aguardando_pagamento">Não pagos</option><option value="cancelado">Cancelados</option><option value="expirado">Expirados</option></select></label>
+        <label className="config-toggle"><span>Somente clientes cadastrados</span><input type="checkbox" checked={filters.registered} onChange={(event) => setFilters({ ...filters, registered: event.target.checked })} /></label>
+        <button type="button" className="ghost-button analytics-clear-button" onClick={() => setFilters({ from: "", to: "", payment: "", registered: false })}>Limpar data</button>
+        <a className="success-button" href={`/api/admin/export.csv${exportQuery ? `?${exportQuery}` : ""}`}>Exportar para Excel</a>
+      </div>
+      <div className="analytics-grid">
+        <article><span>Pedidos filtrados</span><strong>{filtered.length}</strong></article>
+        <article><span>Faturamento pago</span><strong>{currency(revenue)}</strong></article>
+        <article><span>Unidades vendidas</span><strong>{units}</strong></article>
+        <article><span>Ticket médio pago</span><strong>{currency(paid.length ? revenue / paid.length : 0)}</strong></article>
+      </div>
+      <div className="analytics-details">
+        <article><h3>Sabores mais vendidos</h3>{[...flavorMap.entries()].sort((a,b) => b[1].quantity-a[1].quantity).map(([name,value]) => <p key={name}><span>{name}</span><strong>{value.quantity} · {currency(value.revenue)}</strong></p>)}</article>
+        <article><h3>Pedidos por dia</h3>{[...dayMap.entries()].sort((a,b) => b[0].localeCompare(a[0])).map(([day,value]) => <p key={day}><span>{new Date(`${day}T12:00:00`).toLocaleDateString("pt-BR")}</span><strong>{value.orders} pedidos · {value.units} unidades · {currency(value.revenue)}</strong></p>)}</article>
+        <article className="analytics-payment-card">
+          <h3>Valores pendentes e pagamentos</h3>
+          {error && <Notice kind="error">{error}</Notice>}
+          <div className="analytics-payment-list">
+            {paymentOrders.map((order) => <div className={`analytics-payment-row ${order.paymentStatus === "pago" ? "paid" : "unpaid"}`} key={order.id}>
+              <div><strong>{order.customer.name}</strong><span>Pedido #{order.id} · {dateTime(order.createdAt)}</span></div>
+              <b>{currency(order.total)}</b>
+              <button type="button" className={order.paymentStatus === "pago" ? "success-button" : "danger-button"} disabled={updatingOrderId === order.id} onClick={() => void togglePayment(order)}>{updatingOrderId === order.id ? "Salvando..." : order.paymentStatus === "pago" ? "Voltar para não pago" : "Marcar como pago"}</button>
+            </div>)}
+            {!paymentOrders.length && <Notice>Nenhum pedido encontrado.</Notice>}
+          </div>
+        </article>
+      </div>
+    </section>
+  );
 }
 
 
