@@ -378,7 +378,7 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
     }
   }
   const paymentOrders = filtered
-    .filter((order) => order.status !== "cancelado" && !["cancelado", "expirado"].includes(order.paymentStatus))
+    .filter((order) => order.paymentMethod === "pedido_rapido_admin" && order.paymentStatus === "aguardando_pagamento" && order.status !== "cancelado")
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   async function togglePayment(order: Order) {
     setUpdatingOrderId(order.id);
@@ -415,15 +415,15 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
         <article><h3>Sabores mais vendidos</h3>{[...flavorMap.entries()].sort((a,b) => b[1].quantity-a[1].quantity).map(([name,value]) => <p key={name}><span>{name}</span><strong>{value.quantity} · {currency(value.revenue)}</strong></p>)}</article>
         <article><h3>Pedidos por dia</h3>{[...dayMap.entries()].sort((a,b) => b[0].localeCompare(a[0])).map(([day,value]) => <p key={day}><span>{new Date(`${day}T12:00:00`).toLocaleDateString("pt-BR")}</span><strong>{value.orders} pedidos · {value.units} unidades · {currency(value.revenue)}</strong></p>)}</article>
         <article className="analytics-payment-card">
-          <h3>Valores pendentes e pagamentos</h3>
+          <h3>Valores pendentes</h3>
           {error && <Notice kind="error">{error}</Notice>}
           <div className="analytics-payment-list">
             {paymentOrders.map((order) => <div className={`analytics-payment-row ${order.paymentStatus === "pago" ? "paid" : "unpaid"}`} key={order.id}>
               <div><strong>{order.customer.name}</strong><span>Pedido #{order.id} · {dateTime(order.createdAt)}</span></div>
               <b>{currency(order.total)}</b>
-              <button type="button" className={order.paymentStatus === "pago" ? "success-button" : "danger-button"} disabled={updatingOrderId === order.id} onClick={() => void togglePayment(order)}>{updatingOrderId === order.id ? "Salvando..." : order.paymentStatus === "pago" ? "Voltar para não pago" : "Marcar como pago"}</button>
+              <button type="button" className="danger-button" disabled={updatingOrderId === order.id} onClick={() => void togglePayment(order)}>{updatingOrderId === order.id ? "Salvando..." : "Marcar como pago"}</button>
             </div>)}
-            {!paymentOrders.length && <Notice>Nenhum pedido encontrado.</Notice>}
+            {!paymentOrders.length && <Notice>Nenhum pedido rápido não pago.</Notice>}
           </div>
         </article>
       </div>
