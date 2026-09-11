@@ -635,7 +635,7 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
   if (data.status && !allowedStatus.includes(data.status)) throw new HttpError(400, "Status inválido.");
   if (data.paymentStatus && !allowedPayment.includes(data.paymentStatus)) throw new HttpError(400, "Pagamento inválido.");
   await transaction(async (client) => {
-    const current = await client.query<{ status: string; payment_status: string; loyalty_counted: boolean; stock_returned: boolean; subtotal: number; delivery_fee: number }>("SELECT status,payment_status,loyalty_counted,stock_returned,subtotal::FLOAT,delivery_fee::FLOAT FROM orders WHERE id=$1 FOR UPDATE", [orderId]);
+    const current = await client.query<{ status: string; payment_status: string; payment_method: string; loyalty_counted: boolean; stock_returned: boolean; subtotal: number; delivery_fee: number }>("SELECT status,payment_status,payment_method,loyalty_counted,stock_returned,subtotal::FLOAT,delivery_fee::FLOAT FROM orders WHERE id=$1 FOR UPDATE", [orderId]);
     if (!current.rows[0]) throw new HttpError(404, "Pedido não encontrado.");
     if (data.items) {
       if (current.rows[0].status === "cancelado") throw new HttpError(409, "Reabra o pedido antes de editar seus itens.");
@@ -685,10 +685,13 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
     if (stopsCounting && current.rows[0].loyalty_counted) await reverseOrderLoyalty(client, orderId);
     if (data.status === "cancelado") {
       await returnStock(client, orderId, "cancelado");
+    } else if (current.rows[0].payment_method === "pedido_rapido_admin" && data.status && current.rows[0].stock_returned) {
+      const committed = await commitStock(client, orderId);
+      if (!committed) throw new HttpError(409, "Não há estoque suficiente para reabrir este pedido.");
     } else if (data.paymentStatus === "pago") {
       const committed = await commitStock(client, orderId);
       if (!committed) throw new HttpError(409, "Não há estoque suficiente para confirmar este pagamento.");
-    } else if (data.paymentStatus && data.paymentStatus !== "pago") {
+    } else if (data.paymentStatus && data.paymentStatus !== "pago" && current.rows[0].payment_method !== "pedido_rapido_admin") {
       await releaseStock(client, orderId);
     }
     await client.query(
@@ -862,16 +865,14 @@ async function handleAdminQuickOrder(request: Request) {
     const created = await client.query<{ id: number }>(
       `INSERT INTO orders (public_token,customer_id,customer_name,customer_phone,customer_email,status,payment_status,
         payment_method,subtotal,delivery_fee,total,visible_to_admin,paid_at,stock_returned,created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,'pedido_rapido_admin',$8,$9,$10,TRUE,CASE WHEN $7='pago' THEN NOW() ELSE NULL END,$7<>'pago',
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'pedido_rapido_admin',$8,$9,$10,TRUE,CASE WHEN $7='pago' THEN NOW() ELSE NULL END,FALSE,
          CASE WHEN $11::DATE=(NOW() AT TIME ZONE 'America/Sao_Paulo')::DATE THEN NOW() ELSE ($11::DATE + TIME '12:00') AT TIME ZONE 'America/Sao_Paulo' END) RETURNING id`,
       [randomBytes(24).toString("base64url"), customer.rows[0]?.id || null, name, phone, customer.rows[0]?.email || "", status, paymentStatus, subtotal, deliveryFee, subtotal + deliveryFee, selectedOrderDate],
     );
     const id = Number(created.rows[0].id);
     for (const flavor of selected.rows) {
       const quantity = grouped.get(Number(flavor.id)) || 0;
-      if (paymentStatus === "pago") {
-        await client.query("UPDATE flavors SET stock=stock-$2,updated_at=NOW() WHERE id=$1", [flavor.id, quantity]);
-      }
+      await client.query("UPDATE flavors SET stock=stock-$2,updated_at=NOW() WHERE id=$1", [flavor.id, quantity]);
       await client.query(
         "INSERT INTO order_items (order_id,flavor_id,flavor_name,unit_price,quantity,line_total) VALUES ($1,$2,$3,$4,$5,$6)",
         [id, flavor.id, flavor.name, Number(flavor.price), quantity, Number(flavor.price) * quantity],

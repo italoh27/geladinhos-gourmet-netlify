@@ -237,7 +237,7 @@ function OrderEditor({ order, flavors, onSave }: { order: Order; flavors: Flavor
 
 function QuickOrder({ flavors, onCreated }: { flavors: Flavor[]; onCreated: (order: Order) => void }) {
   const available = flavors.filter((flavor) => flavor.active);
-  const [form, setForm] = useState({ name: "Cliente balcão", phone: "", paymentStatus: "aguardando_pagamento", status: "pendente", deliveryFee: 0, orderDate: todayISO() });
+  const [form, setForm] = useState({ name: "", phone: "", paymentStatus: "aguardando_pagamento", status: "pendente", deliveryFee: 0, orderDate: todayISO() });
   const [items, setItems] = useState<Array<{ flavorId: number; quantity: number }>>([{ flavorId: available[0]?.id || 0, quantity: 1 }]);
   const [error, setError] = useState("");
   async function submit(event: FormEvent) {
