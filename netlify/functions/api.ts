@@ -472,7 +472,7 @@ async function handleCheckout(request: Request) {
       `INSERT INTO orders (
         public_token,customer_id,customer_name,customer_phone,customer_email,postal_code,street,number,neighborhood,city,
         complement,reference,subtotal,delivery_fee,total,visible_to_admin,stock_returned,reservation_expires_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,TRUE,NULL) RETURNING id`,
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,FALSE,NULL) RETURNING id`,
       [
         publicToken, session?.customer_id || null, customerName, customerPhone, customerEmail,
         postalCode, street, number, neighborhood, city, cleanText(address.complement, 150), cleanText(address.reference, 150),
@@ -483,6 +483,11 @@ async function handleCheckout(request: Request) {
     for (const flavor of selected.rows) {
       const quantity = grouped.get(Number(flavor.id)) || 0;
       const unitPrice = Number(flavor.price);
+      const reserved = await client.query(
+        "UPDATE flavors SET stock=stock-$2,updated_at=NOW() WHERE id=$1 AND stock >= $2 RETURNING id",
+        [flavor.id, quantity],
+      );
+      if (!reserved.rowCount) throw new HttpError(409, `O estoque de ${flavor.name} acabou durante a finalização.`);
       await client.query(
         "INSERT INTO order_items (order_id,flavor_id,flavor_name,unit_price,quantity,line_total) VALUES ($1,$2,$3,$4,$5,$6)",
         [id, flavor.id, flavor.name, unitPrice, quantity, unitPrice * quantity],
@@ -570,7 +575,7 @@ async function handleAdminOverview(request: Request) {
     query("SELECT * FROM flavors ORDER BY active DESC,name"),
     query(
       `SELECT o.*,
-        COALESCE(JSON_AGG(JSON_BUILD_OBJECT('name',i.flavor_name,'price',i.unit_price::FLOAT,'quantity',i.quantity,'total',i.line_total::FLOAT)
+        COALESCE(JSON_AGG(JSON_BUILD_OBJECT('flavorId',i.flavor_id,'name',i.flavor_name,'price',i.unit_price::FLOAT,'quantity',i.quantity,'total',i.line_total::FLOAT)
           ORDER BY i.id) FILTER (WHERE i.id IS NOT NULL),'[]') AS items
        FROM orders o LEFT JOIN order_items i ON i.order_id=o.id
        WHERE o.visible_to_admin=TRUE GROUP BY o.id ORDER BY o.created_at DESC LIMIT 300`,
@@ -658,7 +663,7 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
       let subtotal = 0;
       for (const flavor of selected.rows) {
         const quantity = grouped.get(Number(flavor.id)) || 0;
-        if (!flavor.active || Number(flavor.stock) < quantity) throw new HttpError(409, `Estoque insuficiente de ${flavor.name}.`);
+        if (Number(flavor.stock) < quantity) throw new HttpError(409, `Estoque insuficiente de ${flavor.name}.`);
         subtotal += Number(flavor.price) * quantity;
       }
       await client.query("DELETE FROM order_items WHERE order_id=$1", [orderId]);
@@ -798,10 +803,33 @@ async function handleAdminConfig(request: Request) {
 
 async function handleAdminCustomers(request: Request, customerId?: number) {
   await requireAdmin(request);
+  if (request.method === "POST") {
+    const data = await body<{ name: string; phone: string; email: string; password: string }>(request);
+    const name = cleanText(data.name, 80);
+    if (name.length < 2) throw new HttpError(400, "Informe o nome do cliente.");
+    const phone = normalizePhone(data.phone);
+    const email = normalizeEmail(data.email);
+    const passwordHash = await hashPassword(String(data.password || ""));
+    try {
+      const created = await query(
+        `INSERT INTO customers (name,phone,email,password_hash)
+         VALUES ($1,$2,$3,$4)
+         RETURNING id,name,phone,email,created_at,0::INTEGER AS order_count,0::FLOAT AS total_paid,
+           0::FLOAT AS outstanding_balance,0::INTEGER AS progress_5,0::INTEGER AS progress_7,
+           0::INTEGER AS rewards_5,0::INTEGER AS rewards_7`,
+        [name, phone, email, passwordHash],
+      );
+      return json({ customer: created.rows[0] }, { status: 201 });
+    } catch (error) {
+      if (String(error).includes("unique")) throw new HttpError(409, "Telefone ou e-mail já cadastrado.");
+      throw error;
+    }
+  }
   if (request.method === "GET") {
     const { rows } = await query(
       `SELECT c.id,c.name,c.phone,c.email,c.created_at,COUNT(o.id)::INTEGER order_count,
         COALESCE(SUM(o.total) FILTER (WHERE o.payment_status='pago'),0)::FLOAT total_paid,
+        COALESCE(SUM(o.total) FILTER (WHERE o.payment_status='aguardando_pagamento' AND o.status<>'cancelado'),0)::FLOAT outstanding_balance,
         COALESCE(b.progress_5,0)::INTEGER progress_5,COALESCE(b.progress_7,0)::INTEGER progress_7,
         COALESCE(b.rewards_5,0)::INTEGER rewards_5,COALESCE(b.rewards_7,0)::INTEGER rewards_7
        FROM customers c LEFT JOIN orders o ON o.customer_id=c.id LEFT JOIN loyalty_balances b ON b.customer_id=c.id
@@ -837,18 +865,27 @@ async function handleAdminQuickOrder(request: Request) {
   only(request, "POST");
   await requireAdmin(request);
   const data = await body<{
-    name?: string; phone?: string; paymentStatus?: string; status?: string; deliveryFee?: number; orderDate?: string; items: CartInput[];
+    customerId?: number; name?: string; phone?: string; paymentStatus?: string; status?: string; deliveryFee?: number; orderDate?: string; items: CartInput[];
   }>(request);
   if (!Array.isArray(data.items) || !data.items.length) throw new HttpError(400, "Adicione pelo menos um sabor.");
   const grouped = new Map<number, number>();
   for (const item of data.items) grouped.set(positiveInt(item.flavorId, "Sabor"), (grouped.get(Number(item.flavorId)) || 0) + positiveInt(item.quantity));
-  const name = cleanText(data.name, 80) || "Cliente balcão";
-  const phone = data.phone ? normalizePhone(data.phone) : "";
+  let name = cleanText(data.name, 80) || "Cliente balcão";
+  let phone = data.phone ? normalizePhone(data.phone) : "";
   const paymentStatus = data.paymentStatus === "pago" ? "pago" : "aguardando_pagamento";
   const status = ["pendente", "em_preparacao", "saiu_entrega", "entregue"].includes(String(data.status)) ? String(data.status) : "pendente";
   const deliveryFee = money(data.deliveryFee || 0);
   const selectedOrderDate = orderDate(data.orderDate);
   const orderId = await transaction(async (client) => {
+    const selectedCustomer = data.customerId ? await client.query<{ id: number; name: string; phone: string; email: string }>(
+      "SELECT id,name,phone,email FROM customers WHERE id=$1 FOR UPDATE",
+      [positiveInt(data.customerId, "Cliente")],
+    ) : { rows: [] };
+    if (data.customerId && !selectedCustomer.rows[0]) throw new HttpError(404, "Cliente não encontrado.");
+    if (selectedCustomer.rows[0]) {
+      name = selectedCustomer.rows[0].name;
+      phone = selectedCustomer.rows[0].phone;
+    }
     const ids = [...grouped.keys()];
     const selected = await client.query<{ id: number; name: string; price: string; stock: number; active: boolean }>(
       "SELECT id,name,price,stock,active FROM flavors WHERE id=ANY($1::BIGINT[]) FOR UPDATE",
@@ -861,7 +898,9 @@ async function handleAdminQuickOrder(request: Request) {
       if (!flavor.active || Number(flavor.stock) < quantity) throw new HttpError(409, `Estoque insuficiente de ${flavor.name}.`);
       subtotal += Number(flavor.price) * quantity;
     }
-    const customer = phone ? await client.query<{ id: number; email: string }>("SELECT id,email FROM customers WHERE phone=$1", [phone]) : { rows: [] };
+    const customer = selectedCustomer.rows[0]
+      ? selectedCustomer
+      : phone ? await client.query<{ id: number; email: string }>("SELECT id,email FROM customers WHERE phone=$1", [phone]) : { rows: [] };
     const created = await client.query<{ id: number }>(
       `INSERT INTO orders (public_token,customer_id,customer_name,customer_phone,customer_email,status,payment_status,
         payment_method,subtotal,delivery_fee,total,visible_to_admin,paid_at,stock_returned,created_at)

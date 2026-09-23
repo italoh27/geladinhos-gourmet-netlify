@@ -9,7 +9,7 @@ import { notifyStoreUpdated, useStore } from "../lib/store";
 import type { Flavor, Order, StoreConfig } from "../lib/types";
 
 type Metrics = { total: number; paid: number; pending: number; cancelled: number; revenue: number };
-type CustomerRow = { id: number; name: string; phone: string; email: string; created_at: string; order_count: number; total_paid: number; progress_5: number; progress_7: number; rewards_5: number; rewards_7: number };
+type CustomerRow = { id: number; name: string; phone: string; email: string; created_at: string; order_count: number; total_paid: number; outstanding_balance: number; progress_5: number; progress_7: number; rewards_5: number; rewards_7: number };
 type LoyaltyRow = { id?: number; customer_id: number; name: string; phone: string; tier?: number; quantity?: number; progress_5?: number; progress_7?: number; rewards_5?: number; rewards_7?: number };
 type Overview = { config: StoreConfig; flavors: Flavor[]; orders: Order[]; metrics: Metrics; loyalty: LoyaltyRow[]; loyaltyProgress: LoyaltyRow[]; stockAddedToday: number };
 type Tab = "orders" | "quick" | "flavors" | "config" | "customers" | "analytics";
@@ -121,8 +121,8 @@ export function AdminPage() {
     return () => window.clearTimeout(timeout);
   }, []);
   useEffect(() => {
-    if (tab !== "customers" || customers.length) return;
-    api<{ customers: CustomerRow[] }>("/admin/customers").then((result) => setCustomers(result.customers)).catch((reason) => { if (localHost()) setCustomers([{ id:1,name:"Ana",phone:"11999999999",email:"ana@exemplo.com",created_at:new Date().toISOString(),order_count:3,total_paid:75,progress_5:4,progress_7:8,rewards_5:0,rewards_7:1 }]); else setError(reason.message); });
+    if (!(["customers", "quick"] as Tab[]).includes(tab) || customers.length) return;
+    api<{ customers: CustomerRow[] }>("/admin/customers").then((result) => setCustomers(result.customers)).catch((reason) => { if (localHost()) setCustomers([{ id:1,name:"Ana",phone:"11999999999",email:"ana@exemplo.com",created_at:new Date().toISOString(),order_count:3,total_paid:75,outstanding_balance:14,progress_5:4,progress_7:8,rewards_5:0,rewards_7:1 }]); else setError(reason.message); });
   }, [tab, customers.length]);
 
   const dayOrders = useMemo(() => (data?.orders || []).filter((order) => order.createdAt.slice(0, 10) === orderDateFilter), [data?.orders, orderDateFilter]);
@@ -142,6 +142,7 @@ export function AdminPage() {
         return { ...current, orders, metrics: metricsFromOrders(orders) };
       });
       notifyStoreUpdated();
+      setCustomers([]);
       setOpenOrder(result.order);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível atualizar o pedido."); }
   }
@@ -194,11 +195,11 @@ export function AdminPage() {
         {data.config.loyaltyActive && <LoyaltyManager notifications={data.loyalty} progress={data.loyaltyProgress} onReload={() => { dataRevision.current += 1; void load(); notifyStoreUpdated(); }} />}
       </>}
 
-      {tab === "quick" && <QuickOrder flavors={data.flavors} onCreated={(order) => { updateOverview((current) => { const orders = [order, ...current.orders.filter((item) => item.id !== order.id)]; return { ...current, orders, metrics: metricsFromOrders(orders) }; }); notifyStoreUpdated(); setTab("orders"); void load(true); }} />}
+      {tab === "quick" && <QuickOrder flavors={data.flavors} customers={customers} onCreated={(order) => { updateOverview((current) => { const orders = [order, ...current.orders.filter((item) => item.id !== order.id)]; return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); notifyStoreUpdated(); setTab("orders"); void load(true); }} />}
       {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => { updateOverview((current) => ({ ...current, flavors })); notifyStoreUpdated(); void load(true); }} />}
       {tab === "config" && <ConfigManager config={data.config} onChange={(config) => { updateOverview((current) => ({ ...current, config })); notifyStoreUpdated(); void reloadStore(); }} notificationsEnabled={notificationsEnabled} onNotificationsChange={setNotificationsPreference} onEnableNotifications={enableNotifications} />}
       {tab === "customers" && <CustomerManager customers={customers} orders={data.orders} onChange={(rows) => { setCustomers(rows); notifyStoreUpdated(); }} />}
-      {tab === "analytics" && <Analytics metrics={data.metrics} orders={data.orders} onOrderUpdated={(order) => { updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); notifyStoreUpdated(); }} />}
+      {tab === "analytics" && <Analytics metrics={data.metrics} orders={data.orders} onOrderUpdated={(order) => { updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); notifyStoreUpdated(); }} />}
 
       {openOrder && <dialog className="admin-order-dialog" open onClick={(event) => { if (event.target === event.currentTarget) { setOpenOrder(null); setEditingOrder(false); } }}>
         <article className="admin-order-detail glass-card">
@@ -210,9 +211,9 @@ export function AdminPage() {
           <div className="status-actions"><button type="button" className={openOrder.paymentStatus === "pago" ? "active" : ""} onClick={() => void updateOrder(openOrder, { paymentStatus: openOrder.paymentStatus === "pago" ? "aguardando_pagamento" : "pago" })}>{openOrder.paymentStatus === "pago" ? "Marcar não pago" : "Marcar pago"}</button>{["pendente","em_preparacao","saiu_entrega","entregue"].map((status) => <button type="button" key={status} className={openOrder.status === status ? "active" : ""} onClick={() => void updateOrder(openOrder, { status })}>{statusLabel[status]}</button>)}<button type="button" className="danger-button" onClick={() => void updateOrder(openOrder, { status: "cancelado" })}>Cancelar</button></div>
           <div className="order-detail-actions">
             <button type="button" className="ghost-button" onClick={() => setEditingOrder((value) => !value)}>{editingOrder ? "Fechar edição" : "Editar pedido"}</button>
-            <button type="button" className="danger-button" onClick={async () => { if (!confirm(`Excluir definitivamente o pedido #${openOrder.id}?`)) return; setError(""); try { const removedId = openOrder.id; await remove(`/admin/orders/${removedId}`); updateOverview((current) => { const orders = current.orders.filter((item) => item.id !== removedId); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setOpenOrder(null); setEditingOrder(false); void load(true); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o pedido.")); } }}>Excluir pedido</button>
+            <button type="button" className="danger-button" onClick={async () => { if (!confirm(`Excluir definitivamente o pedido #${openOrder.id}?`)) return; setError(""); try { const removedId = openOrder.id; await remove(`/admin/orders/${removedId}`); updateOverview((current) => { const orders = current.orders.filter((item) => item.id !== removedId); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); setOpenOrder(null); setEditingOrder(false); void load(true); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o pedido.")); } }}>Excluir pedido</button>
           </div>
-          {editingOrder && <OrderEditor order={openOrder} flavors={data.flavors} onSave={(order) => { setOpenOrder(order); setEditingOrder(false); updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); notifyStoreUpdated(); void load(true); }} />}
+          {editingOrder && <OrderEditor order={openOrder} flavors={data.flavors} onSave={(order) => { setOpenOrder(order); setEditingOrder(false); updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); notifyStoreUpdated(); void load(true); }} />}
         </article>
       </dialog>}
     </section>
@@ -220,7 +221,9 @@ export function AdminPage() {
 }
 
 function OrderEditor({ order, flavors, onSave }: { order: Order; flavors: Flavor[]; onSave: (order: Order) => void }) {
-  const available = flavors.filter((flavor) => flavor.active);
+  const currentFlavorIds = new Set(order.items.map((item) => Number(item.flavorId)));
+  const available = flavors.filter((flavor) => flavor.active || currentFlavorIds.has(flavor.id));
+  const addable = flavors.filter((flavor) => flavor.active);
   const [customerName, setCustomerName] = useState(order.customer.name);
   const [customerPhone, setCustomerPhone] = useState(order.customer.phone);
   const [deliveryFee, setDeliveryFee] = useState(order.deliveryFee);
@@ -231,13 +234,13 @@ function OrderEditor({ order, flavors, onSave }: { order: Order; flavors: Flavor
     {error && <Notice kind="error">{error}</Notice>}
     <div className="manager-create"><input aria-label="Nome do cliente" value={customerName} onChange={(event) => setCustomerName(event.target.value)} /><input aria-label="Telefone" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} /><label className="number-selector"><span>Valor da entrega</span><QuantityControl value={deliveryFee} min={0} max={999} step={0.5} formatValue={currency} label="Valor da entrega" onChange={setDeliveryFee} /></label></div>
     <div className="quick-items">{items.map((item, index) => <div className="quick-item" key={`${item.flavorId}-${index}`}><select value={item.flavorId} onChange={(event) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, flavorId: Number(event.target.value) } : current))}>{available.map((flavor) => <option key={flavor.id} value={flavor.id}>{flavor.name} · {currency(flavor.price)}</option>)}</select><QuantityControl value={item.quantity} min={1} max={999} onChange={(quantity) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, quantity } : current))} /><button className="danger-button" type="button" onClick={() => setItems(items.filter((_, currentIndex) => currentIndex !== index))}>Remover</button></div>)}</div>
-    <div className="button-row"><button className="ghost-button" type="button" disabled={!available.length} onClick={() => setItems([...items, { flavorId: available[0]?.id || 0, quantity: 1 }])}>+ Adicionar sabor</button><button className="primary-button" type="button" onClick={async () => { setError(""); try { const result = await patch<{ order: Order }>(`/admin/orders/${order.id}`, { customerName, customerPhone, deliveryFee, items }); onSave(result.order); } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível editar o pedido."); } }}>Salvar pedido</button></div>
+    <div className="button-row"><button className="ghost-button" type="button" disabled={!addable.length} onClick={() => setItems([...items, { flavorId: addable[0]?.id || 0, quantity: 1 }])}>+ Adicionar sabor</button><button className="primary-button" type="button" disabled={!items.length} onClick={async () => { setError(""); try { const result = await patch<{ order: Order }>(`/admin/orders/${order.id}`, { customerName, customerPhone, deliveryFee, items }); onSave(result.order); } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível editar o pedido."); } }}>Salvar pedido</button></div>
   </section>;
 }
 
-function QuickOrder({ flavors, onCreated }: { flavors: Flavor[]; onCreated: (order: Order) => void }) {
+function QuickOrder({ flavors, customers, onCreated }: { flavors: Flavor[]; customers: CustomerRow[]; onCreated: (order: Order) => void }) {
   const available = flavors.filter((flavor) => flavor.active);
-  const [form, setForm] = useState({ name: "", phone: "", paymentStatus: "aguardando_pagamento", status: "pendente", deliveryFee: 0, orderDate: todayISO() });
+  const [form, setForm] = useState({ customerId: 0, name: "", phone: "", paymentStatus: "aguardando_pagamento", status: "pendente", deliveryFee: 0, orderDate: todayISO() });
   const [items, setItems] = useState<Array<{ flavorId: number; quantity: number }>>([{ flavorId: available[0]?.id || 0, quantity: 1 }]);
   const [error, setError] = useState("");
   async function submit(event: FormEvent) {
@@ -251,8 +254,9 @@ function QuickOrder({ flavors, onCreated }: { flavors: Flavor[]; onCreated: (ord
       {error && <Notice kind="error">{error}</Notice>}
       <form className="auth-form" onSubmit={submit}>
         <div className="manager-create quick-order-fields">
-          <input placeholder="Nome do cliente" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-          <input placeholder="Telefone (opcional)" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
+          <select aria-label="Cliente cadastrado" value={form.customerId} onChange={(event) => { const customerId = Number(event.target.value); const customer = customers.find((item) => item.id === customerId); setForm({ ...form, customerId, name: customer?.name || "", phone: customer?.phone || "" }); }}><option value={0}>Cliente avulso</option>{customers.map((customer) => <option key={customer.id} value={customer.id}>{customer.name} · saldo {currency(customer.outstanding_balance)}</option>)}</select>
+          <input placeholder="Nome do cliente" value={form.name} disabled={Boolean(form.customerId)} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+          <input placeholder="Telefone (opcional)" value={form.phone} disabled={Boolean(form.customerId)} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
           <label className="quick-order-date"><span>Data do pedido</span><input type="date" value={form.orderDate} onChange={(event) => setForm({ ...form, orderDate: event.target.value })} required /></label>
           <label className="number-selector"><span>Taxa de entrega</span><QuantityControl value={form.deliveryFee} min={0} max={999} step={0.5} formatValue={currency} label="Taxa de entrega" onChange={(deliveryFee) => setForm({ ...form, deliveryFee })} /></label>
           <select value={form.paymentStatus} onChange={(event) => setForm({ ...form, paymentStatus: event.target.value })}><option value="aguardando_pagamento">Não pago</option><option value="pago">Pago</option></select>
@@ -345,10 +349,35 @@ function AdminPasswordForm() {
 
 function CustomerManager({ customers, orders, onChange }: { customers: CustomerRow[]; orders: Order[]; onChange: (customers: CustomerRow[]) => void }) {
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState({ name: "", phone: "", email: "", password: "" });
   const [selected, setSelected] = useState<CustomerRow | null>(null);
   const historyStart = "2026-08-20";
   const selectedOrders = useMemo(() => selected ? orders.filter((order) => order.customerId === selected.id && order.createdAt.slice(0, 10) >= historyStart).slice(0, 12) : [], [orders, selected]);
-  return <section className="manager glass-card"><div className="section-title"><div><span>Cadastros</span><h2>Clientes</h2></div><b>{customers.length}</b></div>{error && <Notice kind="error">{error}</Notice>}<div className="customer-admin-list">{customers.map((customer) => <article key={customer.id} className="customer-admin-row" onClick={() => setSelected(customer)} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelected(customer); }}><div><strong>{customer.name}</strong><span>{customer.phone} · {customer.email}</span><small>{customer.order_count} pedido(s) · {currency(customer.total_paid)}</small></div><button type="button" className="danger-button" onClick={async (event) => { event.stopPropagation(); if (!confirm(`Excluir o cadastro de ${customer.name}?`)) return; setError(""); try { await remove(`/admin/customers/${customer.id}`); onChange(customers.filter((item) => item.id !== customer.id)); if (selected?.id === customer.id) setSelected(null); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o cliente.")); } }}>Excluir</button></article>)}</div>{selected && <dialog className="admin-order-dialog" open onClick={(event) => { if (event.target === event.currentTarget) setSelected(null); }}><article className="admin-order-detail glass-card customer-history-dialog"><header><div><span>Histórico do cliente</span><h2>{selected.name}</h2><p>{selected.phone} · {selected.email}</p></div><button type="button" className="dialog-close" onClick={() => setSelected(null)} aria-label="Fechar">×</button></header><div className="customer-history-summary"><p><span>Pedidos</span><strong>{selected.order_count}</strong></p><p><span>Total pago</span><strong>{currency(selected.total_paid)}</strong></p></div><div className="customer-history-list">{selectedOrders.length ? selectedOrders.map((order) => <article key={order.id} className={`customer-history-item ${order.paymentStatus === "pago" ? "paid" : ""}`}><div><strong>Pedido #{order.id}</strong><small>{dateTime(order.createdAt)} · {statusLabel[order.status]}</small></div><b>{currency(order.total)}</b><span className={`admin-order-status-pill status-${order.status}`}>{statusLabel[order.status]}</span></article>) : <Notice>Nenhum pedido encontrado para este cliente.</Notice>}</div></article></dialog>}</section>;
+  async function createCustomer(event: FormEvent) {
+    event.preventDefault(); setError(""); setMessage(""); setCreating(true);
+    try {
+      const result = await post<{ customer: CustomerRow }>("/admin/customers", draft);
+      onChange([result.customer, ...customers]);
+      setDraft({ name: "", phone: "", email: "", password: "" });
+      setMessage(`${result.customer.name} foi cadastrado e já pode receber pedidos.`);
+    } catch (reason) { setError(actionError(reason, "Não foi possível cadastrar o cliente.")); }
+    finally { setCreating(false); }
+  }
+  return <section className="manager glass-card">
+    <div className="section-title"><div><span>Cadastros</span><h2>Clientes</h2></div><b>{customers.length}</b></div>
+    {error && <Notice kind="error">{error}</Notice>}{message && <Notice kind="success">{message}</Notice>}
+    <form className="customer-create-form" onSubmit={createCustomer}>
+      <input placeholder="Nome do cliente" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} required />
+      <input placeholder="Telefone" inputMode="tel" value={draft.phone} onChange={(event) => setDraft({ ...draft, phone: event.target.value })} required />
+      <input placeholder="E-mail" type="email" value={draft.email} onChange={(event) => setDraft({ ...draft, email: event.target.value })} required />
+      <PasswordField placeholder="Senha inicial" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} minLength={6} required />
+      <button className="primary-button" disabled={creating}>{creating ? "Cadastrando..." : "Cadastrar cliente"}</button>
+    </form>
+    <div className="customer-admin-list">{customers.map((customer) => <article key={customer.id} className="customer-admin-row" onClick={() => setSelected(customer)} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") setSelected(customer); }}><div><strong>{customer.name}</strong><span>{customer.phone} · {customer.email}</span><small>{customer.order_count} pedido(s) · pago {currency(customer.total_paid)}</small><small className={customer.outstanding_balance > 0 ? "customer-debt" : ""}>Saldo devedor: {currency(customer.outstanding_balance)}</small></div><button type="button" className="danger-button" onClick={async (event) => { event.stopPropagation(); if (!confirm(`Excluir o cadastro de ${customer.name}?`)) return; setError(""); try { await remove(`/admin/customers/${customer.id}`); onChange(customers.filter((item) => item.id !== customer.id)); if (selected?.id === customer.id) setSelected(null); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o cliente.")); } }}>Excluir</button></article>)}</div>
+    {selected && <dialog className="admin-order-dialog" open onClick={(event) => { if (event.target === event.currentTarget) setSelected(null); }}><article className="admin-order-detail glass-card customer-history-dialog"><header><div><span>Histórico do cliente</span><h2>{selected.name}</h2><p>{selected.phone} · {selected.email}</p></div><button type="button" className="dialog-close" onClick={() => setSelected(null)} aria-label="Fechar">×</button></header><div className="customer-history-summary"><p><span>Pedidos</span><strong>{selected.order_count}</strong></p><p><span>Total pago</span><strong>{currency(selected.total_paid)}</strong></p><p className="debt-summary"><span>Saldo devedor</span><strong>{currency(selected.outstanding_balance)}</strong></p></div><div className="customer-history-list">{selectedOrders.length ? selectedOrders.map((order) => <article key={order.id} className={`customer-history-item ${order.paymentStatus === "pago" ? "paid" : ""}`}><div><strong>Pedido #{order.id}</strong><small>{dateTime(order.createdAt)} · {statusLabel[order.status]}</small></div><b>{currency(order.total)}</b><span className={`admin-order-status-pill status-${order.status}`}>{statusLabel[order.status]}</span></article>) : <Notice>Nenhum pedido encontrado para este cliente.</Notice>}</div></article></dialog>}
+  </section>;
 }
 
 function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orders: Order[]; onOrderUpdated: (order: Order) => void }) {
