@@ -11,6 +11,8 @@ import type { Flavor, Order, StoreConfig } from "../lib/types";
 type Metrics = { total: number; paid: number; pending: number; cancelled: number; revenue: number };
 type CustomerRow = { id: number; name: string; phone: string; email: string; created_at: string; order_count: number; total_paid: number; outstanding_balance: number; progress_5: number; progress_7: number; rewards_5: number; rewards_7: number };
 type LoyaltyRow = { id?: number; customer_id: number; name: string; phone: string; tier?: number; quantity?: number; progress_5?: number; progress_7?: number; rewards_5?: number; rewards_7?: number };
+type AnalyticsCustomerTotal = { name: string; orders: number; units: number; total: number; paid: number; pending: number; lastOrder: string };
+type AnalyticsSummary = { summary: { orders: number; paid_orders: number; total: number; paid: number; pending: number; units: number }; customers: Array<{ name: string; orders: number; units: number; total: number; paid: number; pending: number; last_order: string }> };
 type Overview = { config: StoreConfig; flavors: Flavor[]; orders: Order[]; metrics: Metrics; loyalty: LoyaltyRow[]; loyaltyProgress: LoyaltyRow[]; stockAddedToday: number };
 type Tab = "orders" | "quick" | "flavors" | "config" | "customers" | "analytics";
 const statusLabel: Record<string, string> = { pendente: "Recebido", em_preparacao: "Em preparação", saiu_entrega: "Saiu para entrega", entregue: "Entregue", cancelado: "Cancelado" };
@@ -384,19 +386,61 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
   const [filters, setFilters] = useState({ from: "", to: "", payment: "", registered: false });
   const [updatingOrderId, setUpdatingOrderId] = useState<number | null>(null);
   const [error, setError] = useState("");
-  const filtered = useMemo(() => orders.filter((order) => {
+  const [serverAnalytics, setServerAnalytics] = useState<AnalyticsSummary | null>(null);
+  const periodOrders = useMemo(() => orders.filter((order) => {
     const date = order.createdAt.slice(0, 10);
     if (filters.from && date < filters.from) return false;
     if (filters.to && date > filters.to) return false;
-    if (filters.payment && order.paymentStatus !== filters.payment) return false;
     if (filters.registered && !order.customerId) return false;
     return true;
-  }), [orders, filters]);
+  }), [orders, filters.from, filters.to, filters.registered]);
+  const filtered = useMemo(() => periodOrders.filter((order) => !filters.payment || order.paymentStatus === filters.payment), [periodOrders, filters.payment]);
+  const validPeriodOrders = periodOrders.filter((order) => order.status !== "cancelado" && !["cancelado", "expirado"].includes(order.paymentStatus));
   const paid = filtered.filter((order) => order.paymentStatus === "pago");
   const revenue = paid.reduce((sum, order) => sum + order.total, 0);
   const units = paid.reduce((sum, order) => sum + order.items.reduce((itemSum, item) => itemSum + item.quantity, 0), 0);
+  const localOutstanding = validPeriodOrders.filter((order) => order.paymentStatus === "aguardando_pagamento").reduce((sum, order) => sum + order.total, 0);
+  const localGrossTotal = validPeriodOrders.reduce((sum, order) => sum + order.total, 0);
   const flavorMap = new Map<string, { quantity: number; revenue: number }>();
   const dayMap = new Map<string, { orders: number; units: number; revenue: number }>();
+  const customerMap = new Map<string, AnalyticsCustomerTotal>();
+  const customerKey = (name: string) => name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().replace(/\s+/g, " ").toLocaleLowerCase("pt-BR");
+  for (const order of validPeriodOrders) {
+    const key = customerKey(order.customer.name || "Cliente sem nome");
+    const current = customerMap.get(key) || { name: order.customer.name || "Cliente sem nome", orders: 0, units: 0, total: 0, paid: 0, pending: 0, lastOrder: order.createdAt };
+    const orderUnits = order.items.reduce((sum, item) => sum + item.quantity, 0);
+    current.orders += 1;
+    current.units += orderUnits;
+    current.total += order.total;
+    if (order.paymentStatus === "pago") current.paid += order.total;
+    if (order.paymentStatus === "aguardando_pagamento") current.pending += order.total;
+    if (order.createdAt > current.lastOrder) { current.lastOrder = order.createdAt; current.name = order.customer.name || current.name; }
+    customerMap.set(key, current);
+  }
+  const localCustomerTotals = [...customerMap.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, "pt-BR"));
+  const serverCustomerMap = new Map<string, AnalyticsCustomerTotal>();
+  for (const row of serverAnalytics?.customers || []) {
+    const key = customerKey(row.name);
+    const current = serverCustomerMap.get(key) || { name: row.name, orders: 0, units: 0, total: 0, paid: 0, pending: 0, lastOrder: row.last_order };
+    current.orders += Number(row.orders || 0); current.units += Number(row.units || 0); current.total += Number(row.total || 0);
+    current.paid += Number(row.paid || 0); current.pending += Number(row.pending || 0);
+    if (row.last_order > current.lastOrder) { current.lastOrder = row.last_order; current.name = row.name; }
+    serverCustomerMap.set(key, current);
+  }
+  const customerTotals = serverAnalytics ? [...serverCustomerMap.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, "pt-BR")) : localCustomerTotals;
+  const summary = serverAnalytics?.summary;
+  const grossTotal = Number(summary?.total ?? localGrossTotal);
+  const outstanding = Number(summary?.pending ?? localOutstanding);
+  const receivedTotal = Number(summary?.paid ?? revenue);
+  const paidOrderCount = Number(summary?.paid_orders ?? paid.length);
+  const soldUnits = Number(summary?.units ?? units);
+  const ordersRevision = orders.reduce((latest, order) => order.updatedAt > latest ? order.updatedAt : latest, "");
+  useEffect(() => {
+    const params = new URLSearchParams({ ...(filters.from ? { from: filters.from } : {}), ...(filters.to ? { to: filters.to } : {}), ...(filters.registered ? { registered: "1" } : {}) });
+    let active = true;
+    api<AnalyticsSummary>(`/admin/analytics/summary${params.size ? `?${params}` : ""}`).then((result) => { if (active) setServerAnalytics(result); }).catch((reason) => { if (active) setError(actionError(reason, "Não foi possível atualizar os totais.")); });
+    return () => { active = false; };
+  }, [filters.from, filters.to, filters.registered, ordersRevision]);
   for (const order of filtered) {
     const day = order.createdAt.slice(0, 10);
     const currentDay = dayMap.get(day) || { orders: 0, units: 0, revenue: 0 };
@@ -424,8 +468,8 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
   }
   const exportQuery = new URLSearchParams({ ...(filters.from ? { from: filters.from } : {}), ...(filters.to ? { to: filters.to } : {}), ...(filters.payment ? { payment: filters.payment } : {}) }).toString();
   return (
-    <section className="manager glass-card">
-      <div className="section-title"><div><span>Resultados</span><h2>Análise de dados</h2></div><b>{metrics.total} no histórico recente</b></div>
+    <section className="manager glass-card analytics-section">
+      <div className="section-title"><div><span>Resultados</span><h2>Análise de dados</h2></div><b>Dados financeiros consolidados</b></div>
       <div className="analytics-filters">
         <label>Data inicial<input type="date" value={filters.from} onChange={(event) => setFilters({ ...filters, from: event.target.value })} /></label>
         <label>Data final<input type="date" value={filters.to} onChange={(event) => setFilters({ ...filters, to: event.target.value })} /></label>
@@ -435,11 +479,27 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
         <a className="success-button" href={`/api/admin/export.csv${exportQuery ? `?${exportQuery}` : ""}`}>Exportar para Excel</a>
       </div>
       <div className="analytics-grid">
-        <article><span>Pedidos filtrados</span><strong>{filtered.length}</strong></article>
-        <article><span>Faturamento pago</span><strong>{currency(revenue)}</strong></article>
-        <article><span>Unidades vendidas</span><strong>{units}</strong></article>
-        <article><span>Ticket médio pago</span><strong>{currency(paid.length ? revenue / paid.length : 0)}</strong></article>
+        <article className="analytics-kpi"><span>Pedidos no período</span><strong>{Number(summary?.orders ?? validPeriodOrders.length)}</strong><small>Sem cancelados</small></article>
+        <article className="analytics-kpi total"><span>Valor total</span><strong>{currency(grossTotal)}</strong><small>Sem cancelados</small></article>
+        <article className="analytics-kpi paid"><span>Total recebido</span><strong>{currency(receivedTotal)}</strong><small>{paidOrderCount} pedido(s) pago(s)</small></article>
+        <article className="analytics-kpi pending"><span>Total a receber</span><strong>{currency(outstanding)}</strong><small>Valores ainda não pagos</small></article>
+        <article className="analytics-kpi"><span>Unidades vendidas</span><strong>{soldUnits}</strong><small>Somente pedidos pagos</small></article>
+        <article className="analytics-kpi"><span>Ticket médio pago</span><strong>{currency(paidOrderCount ? receivedTotal / paidOrderCount : 0)}</strong><small>Média por pedido</small></article>
       </div>
+      <article className="analytics-customer-card">
+        <div className="analytics-card-heading"><div><span>Clientes</span><h3>Valor total por cliente</h3></div><b>{customerTotals.length} cliente(s)</b></div>
+        <div className="analytics-customer-head"><span>Cliente</span><span>Pedidos</span><span>Unidades</span><span>Pago</span><span>A receber</span><span>Total</span></div>
+        <div className="analytics-customer-list">
+          {customerTotals.map((customer) => <div className="analytics-customer-row" key={customerKey(customer.name)}>
+            <div><strong>{customer.name}</strong><small>Último pedido: {dateTime(customer.lastOrder)}</small></div>
+            <span data-label="Pedidos">{customer.orders}</span><span data-label="Unidades">{customer.units}</span>
+            <span className="customer-paid" data-label="Pago">{currency(customer.paid)}</span>
+            <span className="customer-pending" data-label="A receber">{currency(customer.pending)}</span>
+            <b data-label="Total">{currency(customer.total)}</b>
+          </div>)}
+          {!customerTotals.length && <Notice>Nenhum cliente encontrado neste período.</Notice>}
+        </div>
+      </article>
       <div className="analytics-details">
         <article><h3>Sabores mais vendidos</h3>{[...flavorMap.entries()].sort((a,b) => b[1].quantity-a[1].quantity).map(([name,value]) => <p key={name}><span>{name}</span><strong>{value.quantity} · {currency(value.revenue)}</strong></p>)}</article>
         <article><h3>Pedidos por dia</h3>{[...dayMap.entries()].sort((a,b) => b[0].localeCompare(a[0])).map(([day,value]) => <p key={day}><span>{new Date(`${day}T12:00:00`).toLocaleDateString("pt-BR")}</span><strong>{value.orders} pedidos · {value.units} unidades · {currency(value.revenue)}</strong></p>)}</article>

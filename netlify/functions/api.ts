@@ -957,6 +957,45 @@ async function handleAdminExport(request: Request) {
   });
 }
 
+async function handleAdminAnalyticsSummary(request: Request) {
+  only(request, "GET");
+  await requireAdmin(request);
+  const url = new URL(request.url);
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get("from") || "") ? url.searchParams.get("from") : null;
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get("to") || "") ? url.searchParams.get("to") : null;
+  const registered = url.searchParams.get("registered") === "1";
+  const selectedOrders = `SELECT * FROM orders
+    WHERE visible_to_admin=TRUE AND status<>'cancelado' AND payment_status NOT IN ('cancelado','expirado')
+      AND ($1::DATE IS NULL OR (created_at AT TIME ZONE 'America/Sao_Paulo')::DATE >= $1::DATE)
+      AND ($2::DATE IS NULL OR (created_at AT TIME ZONE 'America/Sao_Paulo')::DATE <= $2::DATE)
+      AND ($3::BOOLEAN=FALSE OR customer_id IS NOT NULL)`;
+  const [summary, customers] = await Promise.all([
+    query(
+      `WITH selected AS (${selectedOrders}), item_counts AS (
+         SELECT i.order_id,COALESCE(SUM(i.quantity),0)::INTEGER units FROM order_items i JOIN selected s ON s.id=i.order_id GROUP BY i.order_id
+       ) SELECT COUNT(*)::INTEGER orders,COUNT(*) FILTER (WHERE s.payment_status='pago')::INTEGER paid_orders,COALESCE(SUM(s.total),0)::FLOAT total,
+         COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT paid,
+         COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='aguardando_pagamento'),0)::FLOAT pending,
+         COALESCE(SUM(i.units) FILTER (WHERE s.payment_status='pago'),0)::INTEGER units
+       FROM selected s LEFT JOIN item_counts i ON i.order_id=s.id`,
+      [from, to, registered],
+    ),
+    query(
+      `WITH selected AS (${selectedOrders}), item_counts AS (
+         SELECT i.order_id,COALESCE(SUM(i.quantity),0)::INTEGER units FROM order_items i JOIN selected s ON s.id=i.order_id GROUP BY i.order_id
+       ) SELECT (ARRAY_AGG(s.customer_name ORDER BY s.created_at DESC))[1] name,COUNT(*)::INTEGER orders,
+         COALESCE(SUM(i.units),0)::INTEGER units,COALESCE(SUM(s.total),0)::FLOAT total,
+         COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT paid,
+         COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='aguardando_pagamento'),0)::FLOAT pending,
+         MAX(s.created_at) last_order
+       FROM selected s LEFT JOIN item_counts i ON i.order_id=s.id
+       GROUP BY LOWER(REGEXP_REPLACE(TRIM(s.customer_name),'[[:space:]]+',' ','g')) ORDER BY total DESC,name`,
+      [from, to, registered],
+    ),
+  ]);
+  return json({ summary: summary.rows[0], customers: customers.rows });
+}
+
 async function route(request: Request) {
   ensureSameOrigin(request);
   const path = routePath(request);
@@ -980,6 +1019,7 @@ async function route(request: Request) {
   if (path === "/admin/customers") return handleAdminCustomers(request);
   if (path === "/admin/orders/quick") return handleAdminQuickOrder(request);
   if (path === "/admin/export.csv") return handleAdminExport(request);
+  if (path === "/admin/analytics/summary") return handleAdminAnalyticsSummary(request);
 
   let match = path.match(/^\/cep\/(\d{8})$/);
   if (match) return handleCep(request, match[1]);
