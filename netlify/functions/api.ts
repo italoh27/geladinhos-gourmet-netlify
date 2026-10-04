@@ -987,13 +987,45 @@ async function handleAdminAnalyticsSummary(request: Request) {
          COALESCE(SUM(i.units),0)::INTEGER units,COALESCE(SUM(s.total),0)::FLOAT total,
          COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT paid,
          COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='aguardando_pagamento'),0)::FLOAT pending,
-         MAX(s.created_at) last_order
+         MAX(s.created_at) last_order,
+         COALESCE(ARRAY_AGG(s.id ORDER BY s.created_at) FILTER (WHERE s.payment_status='aguardando_pagamento'),'{}') pending_order_ids
        FROM selected s LEFT JOIN item_counts i ON i.order_id=s.id
        GROUP BY LOWER(REGEXP_REPLACE(TRIM(s.customer_name),'[[:space:]]+',' ','g')) ORDER BY total DESC,name`,
       [from, to, registered],
     ),
   ]);
   return json({ summary: summary.rows[0], customers: customers.rows });
+}
+
+async function handleAdminOrdersMarkPaid(request: Request) {
+  only(request, "POST");
+  await requireAdmin(request);
+  const data = await body<{ orderIds: number[] }>(request);
+  const orderIds = [...new Set((data.orderIds || []).map((id) => positiveInt(id, "Pedido")))];
+  if (!orderIds.length) throw new HttpError(400, "Nenhum pedido pendente foi informado.");
+  if (orderIds.length > 200) throw new HttpError(400, "Selecione no máximo 200 pedidos por vez.");
+  await transaction(async (client) => {
+    const selected = await client.query<{ id: number; payment_status: string }>(
+      `SELECT id,payment_status FROM orders
+       WHERE id=ANY($1::BIGINT[]) AND visible_to_admin=TRUE AND status<>'cancelado'
+       FOR UPDATE`,
+      [orderIds],
+    );
+    if (selected.rows.length !== orderIds.length) throw new HttpError(409, "Um dos pedidos não está mais disponível.");
+    for (const order of selected.rows) {
+      if (order.payment_status === "pago") continue;
+      if (order.payment_status !== "aguardando_pagamento") throw new HttpError(409, "Um dos pedidos não pode ser marcado como pago.");
+      const committed = await commitStock(client, Number(order.id));
+      if (!committed) throw new HttpError(409, "Não há estoque suficiente para confirmar todos os pagamentos.");
+      await client.query(
+        "UPDATE orders SET payment_status='pago',visible_to_admin=TRUE,paid_at=COALESCE(paid_at,NOW()),updated_at=NOW() WHERE id=$1",
+        [order.id],
+      );
+      await processOrderLoyalty(client, Number(order.id));
+    }
+  });
+  const updated = await Promise.all(orderIds.map((id) => getOrder(id)));
+  return json({ orders: updated.filter(Boolean).map((order) => normalizeOrder(order as Record<string, unknown>)) });
 }
 
 async function route(request: Request) {
@@ -1020,6 +1052,7 @@ async function route(request: Request) {
   if (path === "/admin/orders/quick") return handleAdminQuickOrder(request);
   if (path === "/admin/export.csv") return handleAdminExport(request);
   if (path === "/admin/analytics/summary") return handleAdminAnalyticsSummary(request);
+  if (path === "/admin/orders/mark-paid") return handleAdminOrdersMarkPaid(request);
 
   let match = path.match(/^\/cep\/(\d{8})$/);
   if (match) return handleCep(request, match[1]);

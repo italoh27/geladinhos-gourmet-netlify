@@ -11,8 +11,8 @@ import type { Flavor, Order, StoreConfig } from "../lib/types";
 type Metrics = { total: number; paid: number; pending: number; cancelled: number; revenue: number };
 type CustomerRow = { id: number; name: string; phone: string; email: string; created_at: string; order_count: number; total_paid: number; outstanding_balance: number; progress_5: number; progress_7: number; rewards_5: number; rewards_7: number };
 type LoyaltyRow = { id?: number; customer_id: number; name: string; phone: string; tier?: number; quantity?: number; progress_5?: number; progress_7?: number; rewards_5?: number; rewards_7?: number };
-type AnalyticsCustomerTotal = { name: string; orders: number; units: number; total: number; paid: number; pending: number; lastOrder: string };
-type AnalyticsSummary = { summary: { orders: number; paid_orders: number; total: number; paid: number; pending: number; units: number }; customers: Array<{ name: string; orders: number; units: number; total: number; paid: number; pending: number; last_order: string }> };
+type AnalyticsCustomerTotal = { name: string; orders: number; units: number; total: number; paid: number; pending: number; lastOrder: string; pendingOrderIds: number[] };
+type AnalyticsSummary = { summary: { orders: number; paid_orders: number; total: number; paid: number; pending: number; units: number }; customers: Array<{ name: string; orders: number; units: number; total: number; paid: number; pending: number; last_order: string; pending_order_ids: number[] }> };
 type Overview = { config: StoreConfig; flavors: Flavor[]; orders: Order[]; metrics: Metrics; loyalty: LoyaltyRow[]; loyaltyProgress: LoyaltyRow[]; stockAddedToday: number };
 type Tab = "orders" | "quick" | "flavors" | "config" | "customers" | "analytics";
 const statusLabel: Record<string, string> = { pendente: "Recebido", em_preparacao: "Em preparação", saiu_entrega: "Saiu para entrega", entregue: "Entregue", cancelado: "Cancelado" };
@@ -385,6 +385,7 @@ function CustomerManager({ customers, orders, onChange }: { customers: CustomerR
 function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orders: Order[]; onOrderUpdated: (order: Order) => void }) {
   const [filters, setFilters] = useState({ from: "", to: "", payment: "", registered: false });
   const [updatingOrderId, setUpdatingOrderId] = useState<number | null>(null);
+  const [updatingCustomer, setUpdatingCustomer] = useState("");
   const [error, setError] = useState("");
   const [serverAnalytics, setServerAnalytics] = useState<AnalyticsSummary | null>(null);
   const periodOrders = useMemo(() => orders.filter((order) => {
@@ -407,13 +408,13 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
   const customerKey = (name: string) => name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().replace(/\s+/g, " ").toLocaleLowerCase("pt-BR");
   for (const order of validPeriodOrders) {
     const key = customerKey(order.customer.name || "Cliente sem nome");
-    const current = customerMap.get(key) || { name: order.customer.name || "Cliente sem nome", orders: 0, units: 0, total: 0, paid: 0, pending: 0, lastOrder: order.createdAt };
+    const current = customerMap.get(key) || { name: order.customer.name || "Cliente sem nome", orders: 0, units: 0, total: 0, paid: 0, pending: 0, lastOrder: order.createdAt, pendingOrderIds: [] };
     const orderUnits = order.items.reduce((sum, item) => sum + item.quantity, 0);
     current.orders += 1;
     current.units += orderUnits;
     current.total += order.total;
     if (order.paymentStatus === "pago") current.paid += order.total;
-    if (order.paymentStatus === "aguardando_pagamento") current.pending += order.total;
+    if (order.paymentStatus === "aguardando_pagamento") { current.pending += order.total; current.pendingOrderIds.push(order.id); }
     if (order.createdAt > current.lastOrder) { current.lastOrder = order.createdAt; current.name = order.customer.name || current.name; }
     customerMap.set(key, current);
   }
@@ -421,13 +422,16 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
   const serverCustomerMap = new Map<string, AnalyticsCustomerTotal>();
   for (const row of serverAnalytics?.customers || []) {
     const key = customerKey(row.name);
-    const current = serverCustomerMap.get(key) || { name: row.name, orders: 0, units: 0, total: 0, paid: 0, pending: 0, lastOrder: row.last_order };
+    const current = serverCustomerMap.get(key) || { name: row.name, orders: 0, units: 0, total: 0, paid: 0, pending: 0, lastOrder: row.last_order, pendingOrderIds: [] };
     current.orders += Number(row.orders || 0); current.units += Number(row.units || 0); current.total += Number(row.total || 0);
     current.paid += Number(row.paid || 0); current.pending += Number(row.pending || 0);
+    current.pendingOrderIds.push(...(row.pending_order_ids || []).map(Number));
     if (row.last_order > current.lastOrder) { current.lastOrder = row.last_order; current.name = row.name; }
     serverCustomerMap.set(key, current);
   }
-  const customerTotals = serverAnalytics ? [...serverCustomerMap.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, "pt-BR")) : localCustomerTotals;
+  const customerTotals = (serverAnalytics ? [...serverCustomerMap.values()] : localCustomerTotals)
+    .filter((customer) => customer.pending > 0.004)
+    .sort((a, b) => b.pending - a.pending || a.name.localeCompare(b.name, "pt-BR"));
   const summary = serverAnalytics?.summary;
   const grossTotal = Number(summary?.total ?? localGrossTotal);
   const outstanding = Number(summary?.pending ?? localOutstanding);
@@ -466,6 +470,16 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
       setUpdatingOrderId(null);
     }
   }
+  async function markCustomerPaid(customer: AnalyticsCustomerTotal) {
+    const key = customerKey(customer.name);
+    if (!customer.pendingOrderIds.length || !confirm(`Marcar ${currency(customer.pending)} de ${customer.name} como pago?`)) return;
+    setUpdatingCustomer(key); setError("");
+    try {
+      const result = await post<{ orders: Order[] }>("/admin/orders/mark-paid", { orderIds: customer.pendingOrderIds });
+      for (const order of result.orders) onOrderUpdated(order);
+    } catch (reason) { setError(actionError(reason, "Não foi possível marcar os pedidos como pagos.")); }
+    finally { setUpdatingCustomer(""); }
+  }
   const exportQuery = new URLSearchParams({ ...(filters.from ? { from: filters.from } : {}), ...(filters.to ? { to: filters.to } : {}), ...(filters.payment ? { payment: filters.payment } : {}) }).toString();
   return (
     <section className="manager glass-card analytics-section">
@@ -487,8 +501,8 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
         <article className="analytics-kpi"><span>Ticket médio pago</span><strong>{currency(paidOrderCount ? receivedTotal / paidOrderCount : 0)}</strong><small>Média por pedido</small></article>
       </div>
       <article className="analytics-customer-card">
-        <div className="analytics-card-heading"><div><span>Clientes</span><h3>Valor total por cliente</h3></div><b>{customerTotals.length} cliente(s)</b></div>
-        <div className="analytics-customer-head"><span>Cliente</span><span>Pedidos</span><span>Unidades</span><span>Pago</span><span>A receber</span><span>Total</span></div>
+        <div className="analytics-card-heading"><div><span>Clientes</span><h3>Clientes com valores a receber</h3></div><b>{customerTotals.length} pendente(s)</b></div>
+        <div className="analytics-customer-head"><span>Cliente</span><span>Pedidos</span><span>Unidades</span><span>Pago</span><span>A receber</span><span>Total</span><span>Ação</span></div>
         <div className="analytics-customer-list">
           {customerTotals.map((customer) => <div className="analytics-customer-row" key={customerKey(customer.name)}>
             <div><strong>{customer.name}</strong><small>Último pedido: {dateTime(customer.lastOrder)}</small></div>
@@ -496,8 +510,9 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
             <span className="customer-paid" data-label="Pago">{currency(customer.paid)}</span>
             <span className="customer-pending" data-label="A receber">{currency(customer.pending)}</span>
             <b data-label="Total">{currency(customer.total)}</b>
+            <button type="button" className="success-button customer-paid-button" disabled={updatingCustomer === customerKey(customer.name)} onClick={() => void markCustomerPaid(customer)}>{updatingCustomer === customerKey(customer.name) ? "Salvando..." : "Marcar pago"}</button>
           </div>)}
-          {!customerTotals.length && <Notice>Nenhum cliente encontrado neste período.</Notice>}
+          {!customerTotals.length && <Notice>Nenhum cliente com valor a receber neste período.</Notice>}
         </div>
       </article>
       <div className="analytics-details">
