@@ -384,8 +384,8 @@ function CustomerManager({ customers, orders, onChange }: { customers: CustomerR
 
 function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orders: Order[]; onOrderUpdated: (order: Order) => void }) {
   const [filters, setFilters] = useState({ from: "", to: "", payment: "", registered: false });
-  const [updatingOrderId, setUpdatingOrderId] = useState<number | null>(null);
   const [updatingCustomer, setUpdatingCustomer] = useState("");
+  const [paymentConfirmation, setPaymentConfirmation] = useState<AnalyticsCustomerTotal | null>(null);
   const [error, setError] = useState("");
   const [serverAnalytics, setServerAnalytics] = useState<AnalyticsSummary | null>(null);
   const periodOrders = useMemo(() => orders.filter((order) => {
@@ -454,29 +454,14 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
       current.quantity += item.quantity; current.revenue += item.total; flavorMap.set(item.name, current);
     }
   }
-  const paymentOrders = filtered
-    .filter((order) => order.paymentMethod === "pedido_rapido_admin" && order.paymentStatus === "aguardando_pagamento" && order.status !== "cancelado")
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  async function togglePayment(order: Order) {
-    setUpdatingOrderId(order.id);
-    setError("");
-    try {
-      const paymentStatus = order.paymentStatus === "pago" ? "aguardando_pagamento" : "pago";
-      const result = await patch<{ order: Order }>(`/admin/orders/${order.id}`, { paymentStatus });
-      onOrderUpdated(result.order);
-    } catch (reason) {
-      setError(actionError(reason, "Não foi possível alterar o pagamento."));
-    } finally {
-      setUpdatingOrderId(null);
-    }
-  }
   async function markCustomerPaid(customer: AnalyticsCustomerTotal) {
     const key = customerKey(customer.name);
-    if (!customer.pendingOrderIds.length || !confirm(`Marcar ${currency(customer.pending)} de ${customer.name} como pago?`)) return;
+    if (!customer.pendingOrderIds.length) return;
     setUpdatingCustomer(key); setError("");
     try {
       const result = await post<{ orders: Order[] }>("/admin/orders/mark-paid", { orderIds: customer.pendingOrderIds });
       for (const order of result.orders) onOrderUpdated(order);
+      setPaymentConfirmation(null);
     } catch (reason) { setError(actionError(reason, "Não foi possível marcar os pedidos como pagos.")); }
     finally { setUpdatingCustomer(""); }
   }
@@ -484,6 +469,7 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
   return (
     <section className="manager glass-card analytics-section">
       <div className="section-title"><div><span>Resultados</span><h2>Análise de dados</h2></div><b>Dados financeiros consolidados</b></div>
+      {error && <Notice kind="error">{error}</Notice>}
       <div className="analytics-filters">
         <label>Data inicial<input type="date" value={filters.from} onChange={(event) => setFilters({ ...filters, from: event.target.value })} /></label>
         <label>Data final<input type="date" value={filters.to} onChange={(event) => setFilters({ ...filters, to: event.target.value })} /></label>
@@ -510,27 +496,26 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
             <span className="customer-paid" data-label="Pago">{currency(customer.paid)}</span>
             <span className="customer-pending" data-label="A receber">{currency(customer.pending)}</span>
             <b data-label="Total">{currency(customer.total)}</b>
-            <button type="button" className="success-button customer-paid-button" disabled={updatingCustomer === customerKey(customer.name)} onClick={() => void markCustomerPaid(customer)}>{updatingCustomer === customerKey(customer.name) ? "Salvando..." : "Marcar pago"}</button>
+            <button type="button" className="success-button customer-paid-button" disabled={updatingCustomer === customerKey(customer.name)} onClick={() => { setError(""); setPaymentConfirmation(customer); }}>{updatingCustomer === customerKey(customer.name) ? "Salvando..." : "Marcar pago"}</button>
           </div>)}
           {!customerTotals.length && <Notice>Nenhum cliente com valor a receber neste período.</Notice>}
         </div>
       </article>
-      <div className="analytics-details">
+      <div className="analytics-details analytics-details-two">
         <article><h3>Sabores mais vendidos</h3>{[...flavorMap.entries()].sort((a,b) => b[1].quantity-a[1].quantity).map(([name,value]) => <p key={name}><span>{name}</span><strong>{value.quantity} · {currency(value.revenue)}</strong></p>)}</article>
         <article><h3>Pedidos por dia</h3>{[...dayMap.entries()].sort((a,b) => b[0].localeCompare(a[0])).map(([day,value]) => <p key={day}><span>{new Date(`${day}T12:00:00`).toLocaleDateString("pt-BR")}</span><strong>{value.orders} pedidos · {value.units} unidades · {currency(value.revenue)}</strong></p>)}</article>
-        <article className="analytics-payment-card">
-          <h3>Valores pendentes</h3>
-          {error && <Notice kind="error">{error}</Notice>}
-          <div className="analytics-payment-list">
-            {paymentOrders.map((order) => <div className={`analytics-payment-row ${order.paymentStatus === "pago" ? "paid" : "unpaid"}`} key={order.id}>
-              <div><strong>{order.customer.name}</strong><span>Pedido #{order.id} · {dateTime(order.createdAt)}</span></div>
-              <b>{currency(order.total)}</b>
-              <button type="button" className="danger-button" disabled={updatingOrderId === order.id} onClick={() => void togglePayment(order)}>{updatingOrderId === order.id ? "Salvando..." : "Marcar como pago"}</button>
-            </div>)}
-            {!paymentOrders.length && <Notice>Nenhum pedido rápido não pago.</Notice>}
-          </div>
-        </article>
       </div>
+      {paymentConfirmation && <dialog className="payment-confirm-dialog" open onClick={(event) => { if (event.target === event.currentTarget && !updatingCustomer) setPaymentConfirmation(null); }}>
+        <article className="payment-confirm-card">
+          <div className="payment-confirm-icon">✓</div>
+          <span>Confirmar pagamento</span>
+          <h3>Marcar como pago?</h3>
+          <p>Você está confirmando o recebimento de <strong>{currency(paymentConfirmation.pending)}</strong> de <strong>{paymentConfirmation.name}</strong>.</p>
+          <small>{paymentConfirmation.pendingOrderIds.length} pedido(s) pendente(s) serão atualizados.</small>
+          {error && <Notice kind="error">{error}</Notice>}
+          <div className="payment-confirm-actions"><button type="button" className="ghost-button" disabled={Boolean(updatingCustomer)} onClick={() => setPaymentConfirmation(null)}>Cancelar</button><button type="button" className="success-button" disabled={Boolean(updatingCustomer)} onClick={() => void markCustomerPaid(paymentConfirmation)}>{updatingCustomer ? "Confirmando..." : "Confirmar pagamento"}</button></div>
+        </article>
+      </dialog>}
     </section>
   );
 }
