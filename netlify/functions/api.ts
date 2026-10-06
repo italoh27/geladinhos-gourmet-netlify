@@ -3,7 +3,7 @@ import { randomBytes, randomInt, createHash } from "node:crypto";
 import { body, cleanText, HttpError, json, money, noContent, normalizeEmail, normalizePhone, only, positiveInt, safeError } from "./_shared/http";
 import { clearSessionCookie, createSession, deleteSession, getSession, hashPassword, requireAdmin, requireCustomer, verifyPassword } from "./_shared/auth";
 import { query, transaction } from "./_shared/db";
-import { commitStock, getOrder, releaseExpiredReservations, releaseStock, returnStock } from "./_shared/orders";
+import { commitStock, getOrder, releaseStock, returnStock } from "./_shared/orders";
 import { applyInfinitePayStatus, checkInfinitePay, createInfinitePayCheckout, infinitePayEnabled } from "./_shared/payment";
 import { recoveryEmailEnabled, sendPasswordResetCode } from "./_shared/email";
 import { deliverLoyaltyReward, processOrderLoyalty, reverseOrderLoyalty, setLoyaltyProgress } from "./_shared/loyalty";
@@ -213,11 +213,22 @@ async function whatsappForOrder(order: Record<string, unknown>) {
 
 async function handleStore(request: Request) {
   only(request, "GET");
-  await releaseExpiredReservations();
   await autoDeactivateEmptyFlavors();
   const [config, flavors, session] = await Promise.all([
     storeConfig(),
-    query("SELECT * FROM flavors WHERE active = TRUE ORDER BY name"),
+    query(`SELECT f.*,
+            GREATEST(f.stock - COALESCE(r.quantity,0),0)::INTEGER AS stock
+          FROM flavors f
+          LEFT JOIN (
+            SELECT i.flavor_id,SUM(i.quantity)::INTEGER quantity
+              FROM order_items i JOIN orders o ON o.id=i.order_id
+             WHERE o.payment_status='aguardando_pagamento'
+               AND o.status<>'cancelado'
+               AND o.stock_returned=TRUE
+               AND o.reservation_expires_at IS NOT NULL
+             GROUP BY i.flavor_id
+          ) r ON r.flavor_id=f.id
+          WHERE f.active=TRUE ORDER BY f.name`),
     getSession(request),
   ]);
   return json({
@@ -419,7 +430,6 @@ async function handleCep(request: Request, cep: string) {
 
 async function handleCheckout(request: Request) {
   only(request, "POST");
-  await releaseExpiredReservations();
   const data = await body<CheckoutInput>(request);
   const config = await storeConfig();
   if (!config.store_open) throw new HttpError(409, "A loja está fechada no momento.");
@@ -453,16 +463,30 @@ async function handleCheckout(request: Request) {
   const orderId = await transaction(async (client) => {
     const ids = [...grouped.keys()];
     const selected = await client.query<{ id: number; name: string; price: string; stock: number; active: boolean; image_url: string }>(
-      "SELECT id,name,price,stock,active,image_url FROM flavors WHERE id = ANY($1::BIGINT[]) FOR UPDATE",
+      "SELECT id,name,price,stock,active,image_url FROM flavors WHERE id = ANY($1::BIGINT[]) ORDER BY id FOR UPDATE",
       [ids],
     );
     if (selected.rows.length !== ids.length) throw new HttpError(409, "Um dos sabores não está mais disponível.");
 
+    const reservations = await client.query<{ flavor_id: number; quantity: number }>(
+      `SELECT i.flavor_id,SUM(i.quantity)::INTEGER quantity
+         FROM order_items i JOIN orders o ON o.id=i.order_id
+        WHERE i.flavor_id=ANY($1::BIGINT[])
+          AND o.payment_status='aguardando_pagamento'
+          AND o.status<>'cancelado'
+          AND o.stock_returned=TRUE
+          AND o.reservation_expires_at IS NOT NULL
+        GROUP BY i.flavor_id`,
+      [ids],
+    );
+    const reservedByFlavor = new Map(reservations.rows.map((row) => [Number(row.flavor_id), Number(row.quantity)]));
+
     let subtotalCents = 0;
     for (const flavor of selected.rows) {
       const quantity = grouped.get(Number(flavor.id)) || 0;
+      const available = Math.max(0, Number(flavor.stock) - (reservedByFlavor.get(Number(flavor.id)) || 0));
       if (!flavor.active) throw new HttpError(409, `${flavor.name} está indisponível.`);
-      if (Number(flavor.stock) < quantity) throw new HttpError(409, `Restam somente ${flavor.stock} unidade(s) de ${flavor.name}.`);
+      if (available < quantity) throw new HttpError(409, `Restam somente ${available} unidade(s) de ${flavor.name}. Atualize o carrinho e tente novamente.`);
       subtotalCents += Math.round(Number(flavor.price) * 100) * quantity;
     }
     const deliveryFee = config.delivery_enabled && !config.free_delivery ? money(config.delivery_fee) : 0;
@@ -472,7 +496,7 @@ async function handleCheckout(request: Request) {
       `INSERT INTO orders (
         public_token,customer_id,customer_name,customer_phone,customer_email,postal_code,street,number,neighborhood,city,
         complement,reference,subtotal,delivery_fee,total,visible_to_admin,stock_returned,reservation_expires_at
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,FALSE,NULL) RETURNING id`,
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,TRUE,NOW() + INTERVAL '15 minutes') RETURNING id`,
       [
         publicToken, session?.customer_id || null, customerName, customerPhone, customerEmail,
         postalCode, street, number, neighborhood, city, cleanText(address.complement, 150), cleanText(address.reference, 150),
@@ -483,11 +507,6 @@ async function handleCheckout(request: Request) {
     for (const flavor of selected.rows) {
       const quantity = grouped.get(Number(flavor.id)) || 0;
       const unitPrice = Number(flavor.price);
-      const reserved = await client.query(
-        "UPDATE flavors SET stock=stock-$2,updated_at=NOW() WHERE id=$1 AND stock >= $2 RETURNING id",
-        [flavor.id, quantity],
-      );
-      if (!reserved.rowCount) throw new HttpError(409, `O estoque de ${flavor.name} acabou durante a finalização.`);
       await client.query(
         "INSERT INTO order_items (order_id,flavor_id,flavor_name,unit_price,quantity,line_total) VALUES ($1,$2,$3,$4,$5,$6)",
         [id, flavor.id, flavor.name, unitPrice, quantity, unitPrice * quantity],
@@ -511,7 +530,6 @@ async function handleCheckout(request: Request) {
 
 async function handleOrderStatus(request: Request, orderId: number) {
   only(request, "GET");
-  await releaseExpiredReservations();
   let order = (await getOrder(orderId)) as Record<string, unknown> | null;
   if (!order || !(await canViewOrder(request, order))) throw new HttpError(404, "Pedido não encontrado.");
   const url = new URL(request.url);
@@ -535,7 +553,6 @@ async function handleCancelOrder(request: Request, orderId: number) {
 async function handleMyOrders(request: Request) {
   only(request, "GET");
   const session = await requireCustomer(request);
-  await releaseExpiredReservations();
   const [{ rows }, loyalty] = await Promise.all([query(
     `SELECT o.*,
       COALESCE(JSON_AGG(JSON_BUILD_OBJECT('name',i.flavor_name,'price',i.unit_price::FLOAT,'quantity',i.quantity,'total',i.line_total::FLOAT)
@@ -568,7 +585,6 @@ async function handleWebhook(request: Request) {
 async function handleAdminOverview(request: Request) {
   only(request, "GET");
   await requireAdmin(request);
-  await releaseExpiredReservations();
   await ensureStockMovementsSchema();
   const [config, flavors, orders, loyaltyProgress, counts, loyalty, stockAddedToday] = await Promise.all([
     storeConfig(),
@@ -656,14 +672,25 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
       const grouped = new Map<number, number>();
       for (const item of data.items) grouped.set(positiveInt(item.flavorId, "Sabor"), (grouped.get(Number(item.flavorId)) || 0) + positiveInt(item.quantity));
       const selected = await client.query<{ id: number; name: string; price: string; stock: number; active: boolean }>(
-        "SELECT id,name,price,stock,active FROM flavors WHERE id=ANY($1::BIGINT[]) FOR UPDATE",
+        "SELECT id,name,price,stock,active FROM flavors WHERE id=ANY($1::BIGINT[]) ORDER BY id FOR UPDATE",
         [[...grouped.keys()]],
       );
       if (selected.rows.length !== grouped.size) throw new HttpError(409, "Um dos sabores não foi encontrado.");
+      const reservations = await client.query<{ flavor_id: number; quantity: number }>(
+        `SELECT i.flavor_id,SUM(i.quantity)::INTEGER quantity
+           FROM order_items i JOIN orders o ON o.id=i.order_id
+          WHERE i.flavor_id=ANY($1::BIGINT[]) AND o.id<>$2
+            AND o.payment_status='aguardando_pagamento' AND o.status<>'cancelado'
+            AND o.stock_returned=TRUE AND o.reservation_expires_at IS NOT NULL
+          GROUP BY i.flavor_id`,
+        [[...grouped.keys()], orderId],
+      );
+      const reservedByFlavor = new Map(reservations.rows.map((row) => [Number(row.flavor_id), Number(row.quantity)]));
       let subtotal = 0;
       for (const flavor of selected.rows) {
         const quantity = grouped.get(Number(flavor.id)) || 0;
-        if (Number(flavor.stock) < quantity) throw new HttpError(409, `Estoque insuficiente de ${flavor.name}.`);
+        const available = Math.max(0, Number(flavor.stock) - (reservedByFlavor.get(Number(flavor.id)) || 0));
+        if (available < quantity) throw new HttpError(409, `Restam somente ${available} unidade(s) de ${flavor.name}.`);
         subtotal += Number(flavor.price) * quantity;
       }
       await client.query("DELETE FROM order_items WHERE order_id=$1", [orderId]);
@@ -888,14 +915,25 @@ async function handleAdminQuickOrder(request: Request) {
     }
     const ids = [...grouped.keys()];
     const selected = await client.query<{ id: number; name: string; price: string; stock: number; active: boolean }>(
-      "SELECT id,name,price,stock,active FROM flavors WHERE id=ANY($1::BIGINT[]) FOR UPDATE",
+      "SELECT id,name,price,stock,active FROM flavors WHERE id=ANY($1::BIGINT[]) ORDER BY id FOR UPDATE",
       [ids],
     );
     if (selected.rows.length !== ids.length) throw new HttpError(409, "Um dos sabores não foi encontrado.");
+    const reservations = await client.query<{ flavor_id: number; quantity: number }>(
+      `SELECT i.flavor_id,SUM(i.quantity)::INTEGER quantity
+         FROM order_items i JOIN orders o ON o.id=i.order_id
+        WHERE i.flavor_id=ANY($1::BIGINT[])
+          AND o.payment_status='aguardando_pagamento' AND o.status<>'cancelado'
+          AND o.stock_returned=TRUE AND o.reservation_expires_at IS NOT NULL
+        GROUP BY i.flavor_id`,
+      [ids],
+    );
+    const reservedByFlavor = new Map(reservations.rows.map((row) => [Number(row.flavor_id), Number(row.quantity)]));
     let subtotal = 0;
     for (const flavor of selected.rows) {
       const quantity = grouped.get(Number(flavor.id)) || 0;
-      if (!flavor.active || Number(flavor.stock) < quantity) throw new HttpError(409, `Estoque insuficiente de ${flavor.name}.`);
+      const available = Math.max(0, Number(flavor.stock) - (reservedByFlavor.get(Number(flavor.id)) || 0));
+      if (!flavor.active || available < quantity) throw new HttpError(409, `Restam somente ${available} unidade(s) de ${flavor.name}.`);
       subtotal += Number(flavor.price) * quantity;
     }
     const customer = selectedCustomer.rows[0]
@@ -975,7 +1013,7 @@ async function handleAdminAnalyticsSummary(request: Request) {
          SELECT i.order_id,COALESCE(SUM(i.quantity),0)::INTEGER units FROM order_items i JOIN selected s ON s.id=i.order_id GROUP BY i.order_id
        ) SELECT COUNT(*)::INTEGER orders,COUNT(*) FILTER (WHERE s.payment_status='pago')::INTEGER paid_orders,COALESCE(SUM(s.total),0)::FLOAT total,
          COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT paid,
-         COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='aguardando_pagamento'),0)::FLOAT pending,
+         COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='aguardando_pagamento' AND s.payment_method='pedido_rapido_admin'),0)::FLOAT pending,
          COALESCE(SUM(i.units) FILTER (WHERE s.payment_status='pago'),0)::INTEGER units
        FROM selected s LEFT JOIN item_counts i ON i.order_id=s.id`,
       [from, to, registered],
@@ -986,11 +1024,13 @@ async function handleAdminAnalyticsSummary(request: Request) {
        ) SELECT (ARRAY_AGG(s.customer_name ORDER BY s.created_at DESC))[1] name,COUNT(*)::INTEGER orders,
          COALESCE(SUM(i.units),0)::INTEGER units,COALESCE(SUM(s.total),0)::FLOAT total,
          COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT paid,
-         COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='aguardando_pagamento'),0)::FLOAT pending,
+         COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='aguardando_pagamento' AND s.payment_method='pedido_rapido_admin'),0)::FLOAT pending,
          MAX(s.created_at) last_order,
-         COALESCE(ARRAY_AGG(s.id ORDER BY s.created_at) FILTER (WHERE s.payment_status='aguardando_pagamento'),'{}') pending_order_ids
+          COALESCE(ARRAY_AGG(s.id ORDER BY s.created_at) FILTER (WHERE s.payment_status='aguardando_pagamento' AND s.payment_method='pedido_rapido_admin'),'{}') pending_order_ids
        FROM selected s LEFT JOIN item_counts i ON i.order_id=s.id
-       GROUP BY LOWER(REGEXP_REPLACE(TRIM(s.customer_name),'[[:space:]]+',' ','g')) ORDER BY total DESC,name`,
+        GROUP BY LOWER(REGEXP_REPLACE(TRIM(s.customer_name),'[[:space:]]+',' ','g'))
+        HAVING COUNT(*) FILTER (WHERE s.payment_status='aguardando_pagamento' AND s.payment_method='pedido_rapido_admin') > 0
+        ORDER BY total DESC,name`,
       [from, to, registered],
     ),
   ]);
@@ -1005,16 +1045,17 @@ async function handleAdminOrdersMarkPaid(request: Request) {
   if (!orderIds.length) throw new HttpError(400, "Nenhum pedido pendente foi informado.");
   if (orderIds.length > 200) throw new HttpError(400, "Selecione no máximo 200 pedidos por vez.");
   await transaction(async (client) => {
-    const selected = await client.query<{ id: number; payment_status: string }>(
-      `SELECT id,payment_status FROM orders
+    const selected = await client.query<{ id: number; payment_status: string; payment_method: string }>(
+      `SELECT id,payment_status,payment_method FROM orders
        WHERE id=ANY($1::BIGINT[]) AND visible_to_admin=TRUE AND status<>'cancelado'
-       FOR UPDATE`,
+       ORDER BY id FOR UPDATE`,
       [orderIds],
     );
     if (selected.rows.length !== orderIds.length) throw new HttpError(409, "Um dos pedidos não está mais disponível.");
     for (const order of selected.rows) {
       if (order.payment_status === "pago") continue;
       if (order.payment_status !== "aguardando_pagamento") throw new HttpError(409, "Um dos pedidos não pode ser marcado como pago.");
+      if (order.payment_method !== "pedido_rapido_admin") throw new HttpError(409, "Somente valores lançados pelo pedido rápido podem ser baixados nesta tela.");
       const committed = await commitStock(client, Number(order.id));
       if (!committed) throw new HttpError(409, "Não há estoque suficiente para confirmar todos os pagamentos.");
       await client.query(

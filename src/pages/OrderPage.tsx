@@ -51,7 +51,7 @@ export function OrderPage() {
           <span>Referência do pedido</span><h1>#{order.id}</h1>
           {order.paymentLink && <a className="primary-button" href={order.paymentLink}>Pagar com a InfinitePay</a>}
           {config.manualPixActive && config.pix && <div className="manual-pix"><strong>Ou pague por Pix</strong><span>Chave: {config.pix.key}</span>{config.pix.name && <span>Nome: {config.pix.name}</span>}{config.pix.bank && <span>Banco: {config.pix.bank}</span>}</div>}
-          {order.paymentLink && <p>A confirmação pela InfinitePay é automática. O estoque será atualizado somente após o pagamento.</p>}
+          {order.paymentLink && <p>A confirmação pela InfinitePay é automática. Seus itens ficam reservados por 15 minutos e só saem definitivamente do estoque após o pagamento.</p>}
         </div>
       )}
       {!paid && finished && <Notice kind="error">Pagamento cancelado ou expirado. Nenhum item foi retirado do estoque.</Notice>}

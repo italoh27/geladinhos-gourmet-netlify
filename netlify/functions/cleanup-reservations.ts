@@ -1,8 +1,8 @@
 import type { Config } from "@netlify/functions";
-import { releaseExpiredReservations } from "./_shared/orders";
+import { reconcileExpiredPayments } from "./_shared/payment";
 
 export default async () => {
-  await releaseExpiredReservations();
+  await reconcileExpiredPayments();
 };
 
 export const config: Config = {

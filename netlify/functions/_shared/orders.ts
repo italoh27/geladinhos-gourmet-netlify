@@ -5,7 +5,6 @@ export async function releaseExpiredReservations() {
     const expired = await client.query<{ id: number }>(
       `SELECT id FROM orders
         WHERE payment_status = 'aguardando_pagamento'
-          AND stock_returned = FALSE
           AND reservation_expires_at IS NOT NULL
           AND reservation_expires_at <= NOW()
         FOR UPDATE SKIP LOCKED`,
@@ -17,12 +16,13 @@ export async function releaseExpiredReservations() {
 }
 
 export async function commitStock(client: DbClient, orderId: number) {
-  const order = await client.query<{ stock_returned: boolean }>(
-    "SELECT stock_returned FROM orders WHERE id = $1 FOR UPDATE",
+  const order = await client.query<{ stock_returned: boolean; payment_status: string; status: string }>(
+    "SELECT stock_returned,payment_status,status FROM orders WHERE id = $1 FOR UPDATE",
     [orderId],
   );
   if (!order.rows[0]) return false;
   if (!order.rows[0].stock_returned) return true;
+  if (["cancelado", "expirado"].includes(order.rows[0].payment_status) || order.rows[0].status === "cancelado") return false;
 
   const items = await client.query<{ flavor_id: number; quantity: number }>(
     "SELECT flavor_id, quantity FROM order_items WHERE order_id = $1 ORDER BY flavor_id FOR UPDATE",
@@ -65,6 +65,11 @@ export async function releaseStock(client: DbClient, orderId: number) {
     );
     await client.query(
       "UPDATE orders SET stock_returned = TRUE, reservation_expires_at = NULL, updated_at = NOW() WHERE id = $1",
+      [orderId],
+    );
+  } else {
+    await client.query(
+      "UPDATE orders SET reservation_expires_at = NULL, updated_at = NOW() WHERE id = $1",
       [orderId],
     );
   }

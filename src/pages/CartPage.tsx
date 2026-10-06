@@ -108,7 +108,11 @@ export function CartPage() {
       localStorage.setItem(`pedido-token-${result.order.id}`, result.token);
       localStorage.setItem(CUSTOMER_PROFILE_KEY, JSON.stringify({ name, phone, email }));
       cart.clear();
-      navigate(`/pedido/${result.order.id}?token=${encodeURIComponent(result.token)}`, { state: { checkoutUrl: result.checkoutUrl } });
+      if (result.checkoutUrl) {
+        window.location.assign(result.checkoutUrl);
+        return;
+      }
+      navigate(`/pedido/${result.order.id}?token=${encodeURIComponent(result.token)}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Não foi possível criar o pedido.");
     } finally {

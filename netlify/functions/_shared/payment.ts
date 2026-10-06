@@ -1,9 +1,10 @@
 import { query, transaction } from "./db";
-import { commitStock, getOrder } from "./orders";
+import { commitStock, getOrder, returnStock } from "./orders";
 import { processOrderLoyalty } from "./loyalty";
 
 type CheckoutOrder = Awaited<ReturnType<typeof getOrder>> & {
   id: number;
+  public_token: string;
   customer_name: string;
   customer_phone: string;
   customer_email: string;
@@ -41,17 +42,22 @@ export async function createInfinitePayCheckout(orderId: number) {
   }
 
   const complement = [order.complement, order.reference ? `Referência: ${order.reference}` : ""].filter(Boolean).join(" | ");
+  const phoneDigits = String(order.customer_phone || "").replace(/\D/g, "");
+  const phoneNumber = phoneDigits.length === 10 || phoneDigits.length === 11
+    ? `+55${phoneDigits}`
+    : phoneDigits.startsWith("55") && (phoneDigits.length === 12 || phoneDigits.length === 13) ? `+${phoneDigits}` : "";
+  const customer = {
+    name: order.customer_name || "Cliente",
+    ...(order.customer_email ? { email: order.customer_email } : {}),
+    ...(phoneNumber ? { phone_number: phoneNumber } : {}),
+  };
   const payload: Record<string, unknown> = {
     handle,
     items,
     order_nsu: String(order.id),
-    redirect_url: `${siteUrl()}/pedido/${order.id}/retorno`,
+    redirect_url: `${siteUrl()}/pedido/${order.id}/retorno?token=${encodeURIComponent(String(order.public_token || ""))}`,
     webhook_url: `${siteUrl()}/api/payments/infinitepay/webhook`,
-    customer: {
-      name: order.customer_name || "Cliente",
-      phone_number: order.customer_phone,
-      ...(order.customer_email ? { email: order.customer_email } : {}),
-    },
+    ...(phoneNumber || order.customer_email ? { customer } : {}),
   };
   if (order.postal_code && order.street && order.number && order.neighborhood) {
     payload.address = {
@@ -98,6 +104,32 @@ export async function checkInfinitePay(orderId: number, transactionNsu = "", slu
   return (await response.json()) as Record<string, unknown>;
 }
 
+export async function reconcileExpiredPayments() {
+  const candidates = await query<{ id: number; transaction_nsu: string; payment_slug: string; payment_link: string }>(
+    `SELECT id,transaction_nsu,payment_slug,payment_link
+       FROM orders
+      WHERE payment_status='aguardando_pagamento'
+        AND (
+          (reservation_expires_at IS NOT NULL AND reservation_expires_at <= NOW())
+          OR (reservation_expires_at IS NULL AND stock_returned=FALSE AND payment_link<>'' AND created_at <= NOW() - INTERVAL '30 minutes')
+        )
+      ORDER BY created_at LIMIT 25`,
+  );
+  for (const order of candidates.rows) {
+    const canVerify = Boolean(order.payment_link) && infinitePayEnabled();
+    const payment = canVerify
+      ? await checkInfinitePay(Number(order.id), String(order.transaction_nsu || ""), String(order.payment_slug || ""))
+      : null;
+    if (payment && Boolean(payment.paid)) {
+      await applyInfinitePayStatus(Number(order.id), payment);
+      continue;
+    }
+    // Sem confirmação positiva até o fim da reserva, libera o item. Um pagamento tardio
+    // nunca baixa estoque silenciosamente: ele é sinalizado como conflito para o admin.
+    await transaction(async (client) => returnStock(client, Number(order.id), "expirado"));
+  }
+}
+
 export async function applyInfinitePayStatus(orderId: number, payload: Record<string, unknown>) {
   const paid = Boolean(payload.paid);
   const transactionNsu = String(payload.transaction_nsu || "");
@@ -107,12 +139,13 @@ export async function applyInfinitePayStatus(orderId: number, payload: Record<st
 
   return transaction(async (client) => {
     const result = await client.query<{
-      id: number; customer_id: number | null; payment_status: string; stock_returned: boolean; loyalty_counted: boolean; total: number;
-    }>("SELECT id, customer_id, payment_status, stock_returned, loyalty_counted,total::FLOAT FROM orders WHERE id = $1 FOR UPDATE", [orderId]);
+      id: number; customer_id: number | null; payment_status: string; status: string; stock_returned: boolean; loyalty_counted: boolean; total: number;
+    }>("SELECT id,customer_id,payment_status,status,stock_returned,loyalty_counted,total::FLOAT FROM orders WHERE id = $1 FOR UPDATE", [orderId]);
     const order = result.rows[0];
     if (!order) return false;
     if (order.payment_status === "pago" && !order.stock_returned) return true;
     if (order.payment_status === "pago" && order.stock_returned && !paid) return true;
+    if (!paid && (["cancelado", "expirado"].includes(order.payment_status) || order.status === "cancelado")) return false;
     const chargedAmount = Number(payload.amount || 0);
     const expectedAmount = Math.round(Number(order.total) * 100);
     if (paid && (!Number.isInteger(chargedAmount) || chargedAmount !== expectedAmount)) {

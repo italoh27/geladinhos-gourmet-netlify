@@ -155,7 +155,7 @@ CREATE INDEX orders_created_at_idx ON orders (created_at DESC);
 CREATE INDEX orders_status_created_at_idx ON orders (status, created_at DESC);
 CREATE INDEX orders_payment_created_at_idx ON orders (payment_status, created_at DESC);
 CREATE INDEX orders_customer_id_idx ON orders (customer_id, created_at DESC);
-CREATE INDEX orders_reservation_idx ON orders (reservation_expires_at) WHERE payment_status = 'aguardando_pagamento' AND stock_returned = FALSE;
+CREATE INDEX orders_reservation_idx ON orders (reservation_expires_at) WHERE payment_status = 'aguardando_pagamento' AND reservation_expires_at IS NOT NULL;
 CREATE INDEX order_items_order_id_idx ON order_items (order_id);
 CREATE INDEX payment_logs_order_id_idx ON payment_logs (order_id, created_at DESC);
 CREATE UNIQUE INDEX orders_transaction_nsu_unique ON orders (transaction_nsu) WHERE transaction_nsu <> '';
