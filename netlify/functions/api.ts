@@ -54,6 +54,7 @@ async function ensureStockMovementsSchema() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )`);
       await query("CREATE INDEX IF NOT EXISTS stock_movements_created_at_idx ON stock_movements (created_at DESC)");
+      await query("CREATE INDEX IF NOT EXISTS orders_updated_at_idx ON orders (updated_at DESC)");
     })().catch((error) => {
       stockMovementsSchemaPromise = null;
       throw error;
@@ -90,12 +91,6 @@ function ensureSameOrigin(request: Request) {
 
 async function storeConfig(client?: { query: typeof query }) {
   const run = client ? client.query.bind(client) : query;
-  const columns = await run<{ column_name: string }>(
-    "SELECT column_name FROM information_schema.columns WHERE table_name='store_config' AND column_name='closed_message'",
-  );
-  if (!columns.rows.length) {
-    await run("ALTER TABLE store_config ADD COLUMN closed_message TEXT NOT NULL DEFAULT 'Estamos fechados agora. Você pode conhecer os sabores e voltar quando a loja abrir.'");
-  }
   const { rows } = await run("SELECT * FROM store_config WHERE id = 1");
   if (!rows[0]) throw new Error("Configuração da loja não encontrada.");
   return rows[0] as StoreConfig;
@@ -631,6 +626,45 @@ async function handleAdminOverview(request: Request) {
     loyalty: loyalty.rows,
     loyaltyProgress: loyaltyProgress.rows,
     stockAddedToday: Number(stockAddedToday.rows[0]?.total || 0),
+    serverTime: new Date().toISOString(),
+  });
+}
+
+async function handleAdminUpdates(request: Request) {
+  only(request, "GET");
+  await requireAdmin(request);
+  const rawSince = new URL(request.url).searchParams.get("since") || "";
+  const since = new Date(rawSince);
+  if (!rawSince || Number.isNaN(since.getTime())) throw new HttpError(400, "Referência de sincronização inválida.");
+  const safeSince = new Date(Math.min(Date.now(), Math.max(since.getTime() - 1500, Date.now() - 60 * 60 * 1000))).toISOString();
+  const [orders, counts, stockAddedToday] = await Promise.all([
+    query(
+      `SELECT o.*,
+        COALESCE(JSON_AGG(JSON_BUILD_OBJECT('flavorId',i.flavor_id,'name',i.flavor_name,'price',i.unit_price::FLOAT,'quantity',i.quantity,'total',i.line_total::FLOAT)
+          ORDER BY i.id) FILTER (WHERE i.id IS NOT NULL),'[]') AS items
+       FROM orders o LEFT JOIN order_items i ON i.order_id=o.id
+       WHERE o.visible_to_admin=TRUE AND o.updated_at > $1::TIMESTAMPTZ
+       GROUP BY o.id ORDER BY o.updated_at DESC LIMIT 100`,
+      [safeSince],
+    ),
+    query<{ total: number; paid: number; pending: number; cancelled: number; revenue: number }>(
+      `SELECT COUNT(*)::INTEGER total,
+        COUNT(*) FILTER (WHERE payment_status='pago')::INTEGER paid,
+        COUNT(*) FILTER (WHERE payment_status='aguardando_pagamento')::INTEGER pending,
+        COUNT(*) FILTER (WHERE status='cancelado')::INTEGER cancelled,
+        COALESCE(SUM(total) FILTER (WHERE payment_status='pago'),0)::FLOAT revenue
+       FROM orders WHERE visible_to_admin=TRUE`,
+    ),
+    query<{ total: number }>(
+      `SELECT COALESCE(SUM(quantity),0)::INTEGER total FROM stock_movements
+        WHERE (created_at AT TIME ZONE 'America/Sao_Paulo')::DATE=(NOW() AT TIME ZONE 'America/Sao_Paulo')::DATE`,
+    ),
+  ]);
+  return json({
+    orders: orders.rows.map((row) => normalizeOrder(row)),
+    metrics: counts.rows[0],
+    stockAddedToday: Number(stockAddedToday.rows[0]?.total || 0),
+    serverTime: new Date().toISOString(),
   });
 }
 
@@ -1086,6 +1120,7 @@ async function route(request: Request) {
   if (path === "/orders/mine") return handleMyOrders(request);
   if (path === "/payments/infinitepay/webhook") return handleWebhook(request);
   if (path === "/admin/overview") return handleAdminOverview(request);
+  if (path === "/admin/updates") return handleAdminUpdates(request);
   if (path === "/admin/config") return handleAdminConfig(request);
   if (path === "/admin/change-password") return handleAdminChangePassword(request);
   if (path === "/admin/flavors") return handleAdminFlavor(request);

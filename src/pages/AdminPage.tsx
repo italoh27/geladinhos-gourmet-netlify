@@ -14,7 +14,8 @@ type CustomerRow = { id: number; name: string; phone: string; email: string; cre
 type LoyaltyRow = { id?: number; customer_id: number; name: string; phone: string; tier?: number; quantity?: number; progress_5?: number; progress_7?: number; rewards_5?: number; rewards_7?: number };
 type AnalyticsCustomerTotal = { name: string; orders: number; units: number; total: number; paid: number; pending: number; lastOrder: string; pendingOrderIds: number[] };
 type AnalyticsSummary = { summary: { orders: number; paid_orders: number; total: number; paid: number; pending: number; units: number }; customers: Array<{ name: string; orders: number; units: number; total: number; paid: number; pending: number; last_order: string; pending_order_ids: number[] }> };
-type Overview = { config: StoreConfig; flavors: Flavor[]; orders: Order[]; metrics: Metrics; loyalty: LoyaltyRow[]; loyaltyProgress: LoyaltyRow[]; stockAddedToday: number };
+type Overview = { config: StoreConfig; flavors: Flavor[]; orders: Order[]; metrics: Metrics; loyalty: LoyaltyRow[]; loyaltyProgress: LoyaltyRow[]; stockAddedToday: number; serverTime?: string };
+type AdminUpdates = { orders: Order[]; metrics: Metrics; stockAddedToday: number; serverTime: string };
 type Tab = "orders" | "quick" | "flavors" | "config" | "customers" | "analytics";
 const statusLabel: Record<string, string> = { pendente: "Recebido", em_preparacao: "Em preparação", saiu_entrega: "Saiu para entrega", entregue: "Entregue", cancelado: "Cancelado" };
 const localHost = () => ["localhost", "127.0.0.1"].includes(window.location.hostname);
@@ -39,6 +40,13 @@ function readCachedOverview() {
     return parsed;
   } catch {
     return null;
+  }
+}
+function cacheOverview(data: Overview) {
+  try {
+    localStorage.setItem(ADMIN_OVERVIEW_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data }));
+  } catch {
+    // Cache opcional.
   }
 }
 function metricsFromOrders(orders: Order[]): Metrics {
@@ -77,10 +85,18 @@ export function AdminPage() {
     try { return localStorage.getItem(ADMIN_NOTIFICATIONS_KEY) === "1"; } catch { return false; }
   });
   const dataRevision = useRef(0);
+  const lastSyncAt = useRef(cachedOverview?.data?.serverTime || (cachedOverview?.timestamp ? new Date(cachedOverview.timestamp).toISOString() : ""));
+  const knownOrderIds = useRef(new Set((cachedOverview?.data?.orders || []).map((order) => order.id)));
 
   const updateOverview = useCallback((updater: (current: Overview) => Overview) => {
     dataRevision.current += 1;
-    setData((current) => current ? updater(current) : current);
+    setData((current) => {
+      if (!current) return current;
+      const next = updater(current);
+      if (next === current) return current;
+      cacheOverview(next);
+      return next;
+    });
   }, []);
 
   const load = useCallback(async (quiet = false) => {
@@ -92,11 +108,9 @@ export function AdminPage() {
         if (quiet && notifications && current && next.metrics.total > current.metrics.total && "Notification" in window && Notification.permission === "granted") {
           new Notification("Novo pedido", { body: "Um novo pedido chegou na loja." });
         }
-        try {
-          localStorage.setItem(ADMIN_OVERVIEW_CACHE_KEY, JSON.stringify({ timestamp: Date.now(), data: next }));
-        } catch {
-          // Cache opcional.
-        }
+        lastSyncAt.current = next.serverTime || new Date().toISOString();
+        knownOrderIds.current = new Set(next.orders.map((order) => order.id));
+        cacheOverview(next);
         return next;
       });
     } catch (reason) {
@@ -108,12 +122,42 @@ export function AdminPage() {
   }, [navigate, notifications]);
 
   useEffect(() => { void load(); }, [load]);
+  const syncUpdates = useCallback(async () => {
+    if (!lastSyncAt.current) { await load(true); return; }
+    try {
+      const result = await api<AdminUpdates>(`/admin/updates?since=${encodeURIComponent(lastSyncAt.current)}`);
+      lastSyncAt.current = result.serverTime;
+      const freshOrders = result.orders.filter((order) => !knownOrderIds.current.has(order.id));
+      for (const order of result.orders) knownOrderIds.current.add(order.id);
+      updateOverview((current) => {
+        const metricsUnchanged = current.metrics.total === result.metrics.total && current.metrics.paid === result.metrics.paid
+          && current.metrics.pending === result.metrics.pending && current.metrics.cancelled === result.metrics.cancelled
+          && current.metrics.revenue === result.metrics.revenue;
+        if (!result.orders.length && metricsUnchanged && current.stockAddedToday === result.stockAddedToday) return current;
+        const changed = new Map(result.orders.map((order) => [order.id, order]));
+        const orders = [...result.orders.filter((order) => !current.orders.some((item) => item.id === order.id)), ...current.orders.map((order) => changed.get(order.id) || order)]
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 300);
+        return { ...current, orders, metrics: result.metrics, stockAddedToday: result.stockAddedToday, serverTime: result.serverTime };
+      });
+      if (freshOrders.length && notifications && "Notification" in window && Notification.permission === "granted") {
+        new Notification("Novo pedido", { body: freshOrders.length === 1 ? "Um novo pedido chegou na loja." : `${freshOrders.length} novos pedidos chegaram.` });
+      }
+      setOpenOrder((current) => current ? result.orders.find((order) => order.id === current.id) || current : current);
+    } catch (reason) {
+      if ((reason as { status?: number })?.status === 401) navigate("/admin/login", { replace: true });
+    }
+  }, [load, navigate, notifications, updateOverview]);
+  useEffect(() => { const timer = window.setInterval(() => void syncUpdates(), 5000); return () => window.clearInterval(timer); }, [syncUpdates]);
+  useEffect(() => { const timer = window.setInterval(() => void load(true), 120000); return () => window.clearInterval(timer); }, [load]);
   useEffect(() => {
-    api<{ admin: boolean }>("/auth/me").then((result) => {
-      if (!result.admin) navigate("/admin/login", { replace: true });
-    }).catch(() => navigate("/admin/login", { replace: true }));
-  }, [navigate]);
-  useEffect(() => { const timer = window.setInterval(() => void load(true), 10000); return () => window.clearInterval(timer); }, [load]);
+    const refreshWhenVisible = () => { if (document.visibilityState === "visible") void load(true); };
+    window.addEventListener("focus", refreshWhenVisible);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      window.removeEventListener("focus", refreshWhenVisible);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [load]);
   useEffect(() => {
     const syncToday = () => setOrderDateFilter(todayISO());
     syncToday();
@@ -198,8 +242,8 @@ export function AdminPage() {
         {data.config.loyaltyActive && <LoyaltyManager notifications={data.loyalty} progress={data.loyaltyProgress} onReload={() => { dataRevision.current += 1; void load(); notifyStoreUpdated(); }} />}
       </>}
 
-      {tab === "quick" && <QuickOrder flavors={data.flavors} customers={customers} onCreated={(order) => { updateOverview((current) => { const orders = [order, ...current.orders.filter((item) => item.id !== order.id)]; return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); notifyStoreUpdated(); setTab("orders"); void load(true); }} />}
-      {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => { updateOverview((current) => ({ ...current, flavors })); notifyStoreUpdated(); void load(true); }} />}
+      {tab === "quick" && <QuickOrder flavors={data.flavors} customers={customers} onCreated={(order) => { knownOrderIds.current.add(order.id); updateOverview((current) => { const orders = [order, ...current.orders.filter((item) => item.id !== order.id)]; return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); notifyStoreUpdated(); setTab("orders"); }} />}
+      {tab === "flavors" && <FlavorManager flavors={data.flavors} onChange={(flavors) => { updateOverview((current) => ({ ...current, flavors })); notifyStoreUpdated(); }} />}
       {tab === "config" && <ConfigManager config={data.config} onChange={(config) => { updateOverview((current) => ({ ...current, config })); notifyStoreUpdated(); void reloadStore(); }} notificationsEnabled={notificationsEnabled} onNotificationsChange={setNotificationsPreference} onEnableNotifications={enableNotifications} />}
       {tab === "customers" && <CustomerManager customers={customers} orders={data.orders} onChange={(rows) => { setCustomers(rows); notifyStoreUpdated(); }} />}
       {tab === "analytics" && <Analytics metrics={data.metrics} orders={data.orders} onOrderUpdated={(order) => { updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); notifyStoreUpdated(); }} />}
@@ -214,9 +258,9 @@ export function AdminPage() {
           <div className="status-actions"><button type="button" className={openOrder.paymentStatus === "pago" ? "active" : ""} onClick={() => void updateOrder(openOrder, { paymentStatus: openOrder.paymentStatus === "pago" ? "aguardando_pagamento" : "pago" })}>{openOrder.paymentStatus === "pago" ? "Marcar não pago" : "Marcar pago"}</button>{["pendente","em_preparacao","saiu_entrega","entregue"].map((status) => <button type="button" key={status} className={openOrder.status === status ? "active" : ""} onClick={() => void updateOrder(openOrder, { status })}>{statusLabel[status]}</button>)}<button type="button" className="danger-button" onClick={() => void updateOrder(openOrder, { status: "cancelado" })}>Cancelar</button></div>
           <div className="order-detail-actions">
             <button type="button" className="ghost-button" onClick={() => setEditingOrder((value) => !value)}>{editingOrder ? "Fechar edição" : "Editar pedido"}</button>
-            <button type="button" className="danger-button" onClick={async () => { if (!confirm(`Excluir definitivamente o pedido #${openOrder.id}?`)) return; setError(""); try { const removedId = openOrder.id; await remove(`/admin/orders/${removedId}`); updateOverview((current) => { const orders = current.orders.filter((item) => item.id !== removedId); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); setOpenOrder(null); setEditingOrder(false); void load(true); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o pedido.")); } }}>Excluir pedido</button>
+            <button type="button" className="danger-button" onClick={async () => { if (!confirm(`Excluir definitivamente o pedido #${openOrder.id}?`)) return; setError(""); try { const removedId = openOrder.id; await remove(`/admin/orders/${removedId}`); updateOverview((current) => { const orders = current.orders.filter((item) => item.id !== removedId); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); setOpenOrder(null); setEditingOrder(false); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o pedido.")); } }}>Excluir pedido</button>
           </div>
-          {editingOrder && <OrderEditor order={openOrder} flavors={data.flavors} onSave={(order) => { setOpenOrder(order); setEditingOrder(false); updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); notifyStoreUpdated(); void load(true); }} />}
+          {editingOrder && <OrderEditor order={openOrder} flavors={data.flavors} onSave={(order) => { setOpenOrder(order); setEditingOrder(false); updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); notifyStoreUpdated(); }} />}
         </article>
       </dialog>}
     </section>

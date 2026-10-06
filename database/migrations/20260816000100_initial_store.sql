@@ -152,6 +152,7 @@ CREATE INDEX auth_sessions_token_hash_idx ON auth_sessions (token_hash);
 CREATE INDEX auth_sessions_expires_at_idx ON auth_sessions (expires_at);
 CREATE INDEX password_reset_active_idx ON password_reset_tokens (customer_id, expires_at DESC) WHERE used_at IS NULL;
 CREATE INDEX orders_created_at_idx ON orders (created_at DESC);
+CREATE INDEX orders_updated_at_idx ON orders (updated_at DESC);
 CREATE INDEX orders_status_created_at_idx ON orders (status, created_at DESC);
 CREATE INDEX orders_payment_created_at_idx ON orders (payment_status, created_at DESC);
 CREATE INDEX orders_customer_id_idx ON orders (customer_id, created_at DESC);

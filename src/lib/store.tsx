@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 import { api } from "./api";
 import { localDemoStore } from "./demo";
 import type { Customer, StorePayload } from "./types";
@@ -40,6 +41,8 @@ const empty: StorePayload = {
 };
 
 export function StoreProvider({ children }: { children: ReactNode }) {
+  const location = useLocation();
+  const isAdminPage = location.pathname.startsWith("/admin");
   const cached = typeof window === "undefined" ? null : readCachedStore();
   const [data, setData] = useState<StorePayload>(cached?.data || empty);
   const [loading, setLoading] = useState(!cached);
@@ -78,9 +81,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => { if (!isAdminPage) void reload(); }, [isAdminPage, reload]);
   useEffect(() => {
     const refresh = () => {
+      if (isAdminPage) return;
       if (Date.now() - lastLoadedAt < 5000) return;
       void reload();
     };
@@ -90,7 +94,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       window.removeEventListener(STORE_UPDATED_EVENT, refresh);
       window.removeEventListener("focus", refresh);
     };
-  }, [reload, lastLoadedAt]);
+  }, [reload, lastLoadedAt, isAdminPage]);
   const value = useMemo<StoreContextValue>(() => ({
     ...data, loading, error, reload,
     setCustomer(customer) { setData((current) => ({ ...current, customer })); },

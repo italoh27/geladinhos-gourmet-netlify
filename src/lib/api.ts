@@ -34,10 +34,13 @@ export function remove(path: string) {
   return api<void>(path, { method: "DELETE" });
 }
 
+const currencyFormatter = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
+const dateTimeFormatter = new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" });
+
 export function currency(value: number) {
-  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(Number(value || 0));
+  return currencyFormatter.format(Number(value || 0));
 }
 
 export function dateTime(value: string) {
-  return new Intl.DateTimeFormat("pt-BR", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
+  return dateTimeFormatter.format(new Date(value));
 }
