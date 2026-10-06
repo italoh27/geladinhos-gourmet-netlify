@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { Loading, Notice } from "../components/Loading";
 import { QuantityControl } from "../components/QuantityControl";
@@ -505,17 +506,17 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
         <article><h3>Sabores mais vendidos</h3>{[...flavorMap.entries()].sort((a,b) => b[1].quantity-a[1].quantity).map(([name,value]) => <p key={name}><span>{name}</span><strong>{value.quantity} · {currency(value.revenue)}</strong></p>)}</article>
         <article><h3>Pedidos por dia</h3>{[...dayMap.entries()].sort((a,b) => b[0].localeCompare(a[0])).map(([day,value]) => <p key={day}><span>{new Date(`${day}T12:00:00`).toLocaleDateString("pt-BR")}</span><strong>{value.orders} pedidos · {value.units} unidades · {currency(value.revenue)}</strong></p>)}</article>
       </div>
-      {paymentConfirmation && <dialog className="payment-confirm-dialog" open onClick={(event) => { if (event.target === event.currentTarget && !updatingCustomer) setPaymentConfirmation(null); }}>
+      {paymentConfirmation && createPortal(<div className="payment-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="payment-confirm-title" onClick={(event) => { if (event.target === event.currentTarget && !updatingCustomer) setPaymentConfirmation(null); }}>
         <article className="payment-confirm-card">
           <div className="payment-confirm-icon">✓</div>
           <span>Confirmar pagamento</span>
-          <h3>Marcar como pago?</h3>
+          <h3 id="payment-confirm-title">Marcar como pago?</h3>
           <p>Você está confirmando o recebimento de <strong>{currency(paymentConfirmation.pending)}</strong> de <strong>{paymentConfirmation.name}</strong>.</p>
           <small>{paymentConfirmation.pendingOrderIds.length} pedido(s) pendente(s) serão atualizados.</small>
           {error && <Notice kind="error">{error}</Notice>}
           <div className="payment-confirm-actions"><button type="button" className="ghost-button" disabled={Boolean(updatingCustomer)} onClick={() => setPaymentConfirmation(null)}>Cancelar</button><button type="button" className="success-button" disabled={Boolean(updatingCustomer)} onClick={() => void markCustomerPaid(paymentConfirmation)}>{updatingCustomer ? "Confirmando..." : "Confirmar pagamento"}</button></div>
         </article>
-      </dialog>}
+      </div>, document.body)}
     </section>
   );
 }
