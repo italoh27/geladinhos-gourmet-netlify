@@ -683,7 +683,7 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
   only(request, "PATCH");
   const data = await body<{
     status?: string; paymentStatus?: string; customerName?: string; customerPhone?: string;
-    deliveryFee?: number; items?: CartInput[];
+    deliveryFee?: number; orderDate?: string; items?: CartInput[];
   }>(request);
   const allowedStatus = ["pendente", "em_preparacao", "saiu_entrega", "entregue", "cancelado"];
   const allowedPayment = ["aguardando_pagamento", "pago", "cancelado"];
@@ -770,6 +770,17 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
       "UPDATE orders SET customer_name=COALESCE($2,customer_name),customer_phone=COALESCE($3,customer_phone),updated_at=NOW() WHERE id=$1",
       [orderId, data.customerName === undefined ? null : cleanText(data.customerName, 80), data.customerPhone === undefined ? null : (data.customerPhone ? normalizePhone(data.customerPhone) : "")],
     );
+    if (data.orderDate !== undefined) {
+      if (current.rows[0].payment_method !== "pedido_rapido_admin") throw new HttpError(409, "A data só pode ser alterada em pedidos rápidos.");
+      const selectedOrderDate = orderDate(data.orderDate);
+      await client.query(
+        `UPDATE orders
+            SET created_at=($2::DATE + (created_at AT TIME ZONE 'America/Sao_Paulo')::TIME) AT TIME ZONE 'America/Sao_Paulo',
+                updated_at=NOW()
+          WHERE id=$1`,
+        [orderId, selectedOrderDate],
+      );
+    }
     const effective = await client.query<{ status: string; payment_status: string; stock_returned: boolean }>("SELECT status,payment_status,stock_returned FROM orders WHERE id=$1", [orderId]);
     if (effective.rows[0]?.payment_status === "pago" && effective.rows[0]?.status !== "cancelado" && !effective.rows[0]?.stock_returned) await processOrderLoyalty(client, orderId);
   });

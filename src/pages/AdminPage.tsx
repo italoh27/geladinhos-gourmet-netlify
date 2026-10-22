@@ -260,7 +260,7 @@ export function AdminPage() {
             <button type="button" className="ghost-button" onClick={() => setEditingOrder((value) => !value)}>{editingOrder ? "Fechar edição" : "Editar pedido"}</button>
             <button type="button" className="danger-button" onClick={async () => { if (!confirm(`Excluir definitivamente o pedido #${openOrder.id}?`)) return; setError(""); try { const removedId = openOrder.id; await remove(`/admin/orders/${removedId}`); updateOverview((current) => { const orders = current.orders.filter((item) => item.id !== removedId); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); setOpenOrder(null); setEditingOrder(false); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o pedido.")); } }}>Excluir pedido</button>
           </div>
-          {editingOrder && <OrderEditor order={openOrder} flavors={data.flavors} onSave={(order) => { setOpenOrder(order); setEditingOrder(false); updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); notifyStoreUpdated(); }} />}
+          {editingOrder && <OrderEditor key={openOrder.id} order={openOrder} flavors={data.flavors} onSave={(order) => { setOpenOrder(order); setEditingOrder(false); updateOverview((current) => { const orders = current.orders.map((item) => item.id === order.id ? order : item); return { ...current, orders, metrics: metricsFromOrders(orders) }; }); setCustomers([]); notifyStoreUpdated(); }} />}
         </article>
       </dialog>}
     </section>
@@ -268,20 +268,28 @@ export function AdminPage() {
 }
 
 function OrderEditor({ order, flavors, onSave }: { order: Order; flavors: Flavor[]; onSave: (order: Order) => void }) {
-  const currentFlavorIds = new Set(order.items.map((item) => Number(item.flavorId)));
+  const editableItems = order.items.map((item) => {
+    const flavorId = Number(item.flavorId) || flavors.find((flavor) => flavor.name.trim().toLocaleLowerCase("pt-BR") === item.name.trim().toLocaleLowerCase("pt-BR"))?.id || 0;
+    return { flavorId, quantity: item.quantity };
+  }).filter((item) => item.flavorId > 0);
+  const currentFlavorIds = new Set(editableItems.map((item) => item.flavorId));
   const available = flavors.filter((flavor) => flavor.active || currentFlavorIds.has(flavor.id));
   const addable = flavors.filter((flavor) => flavor.active);
+  const quickOrder = order.paymentMethod === "pedido_rapido_admin";
   const [customerName, setCustomerName] = useState(order.customer.name);
   const [customerPhone, setCustomerPhone] = useState(order.customer.phone);
   const [deliveryFee, setDeliveryFee] = useState(order.deliveryFee);
-  const [items, setItems] = useState(() => order.items.filter((item) => item.flavorId).map((item) => ({ flavorId: Number(item.flavorId), quantity: item.quantity })));
+  const [orderDate, setOrderDate] = useState(order.createdAt.slice(0, 10));
+  const [items, setItems] = useState(editableItems);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   return <section className="inline-order-editor">
-    <h3>Editar dados e itens</h3>
+    <h3>{quickOrder ? "Editar pedido rápido" : "Editar dados e itens"}</h3>
     {error && <Notice kind="error">{error}</Notice>}
-    <div className="manager-create"><input aria-label="Nome do cliente" value={customerName} onChange={(event) => setCustomerName(event.target.value)} /><input aria-label="Telefone" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} /><label className="number-selector"><span>Valor da entrega</span><QuantityControl value={deliveryFee} min={0} max={999} step={0.5} formatValue={currency} label="Valor da entrega" onChange={setDeliveryFee} /></label></div>
+    <div className="manager-create"><input aria-label="Nome do cliente" value={customerName} onChange={(event) => setCustomerName(event.target.value)} /><input aria-label="Telefone" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} />{quickOrder && <label className="quick-order-date"><span>Data do pedido</span><input type="date" value={orderDate} onChange={(event) => setOrderDate(event.target.value)} required /></label>}<label className="number-selector"><span>Valor da entrega</span><QuantityControl value={deliveryFee} min={0} max={999} step={0.5} formatValue={currency} label="Valor da entrega" onChange={setDeliveryFee} /></label></div>
     <div className="quick-items">{items.map((item, index) => <div className="quick-item" key={`${item.flavorId}-${index}`}><select value={item.flavorId} onChange={(event) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, flavorId: Number(event.target.value) } : current))}>{available.map((flavor) => <option key={flavor.id} value={flavor.id}>{flavor.name} · {currency(flavor.price)}</option>)}</select><QuantityControl value={item.quantity} min={1} max={999} onChange={(quantity) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, quantity } : current))} /><button className="danger-button" type="button" onClick={() => setItems(items.filter((_, currentIndex) => currentIndex !== index))}>Remover</button></div>)}</div>
-    <div className="button-row"><button className="ghost-button" type="button" disabled={!addable.length} onClick={() => setItems([...items, { flavorId: addable[0]?.id || 0, quantity: 1 }])}>+ Adicionar sabor</button><button className="primary-button" type="button" disabled={!items.length} onClick={async () => { setError(""); try { const result = await patch<{ order: Order }>(`/admin/orders/${order.id}`, { customerName, customerPhone, deliveryFee, items }); onSave(result.order); } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível editar o pedido."); } }}>Salvar pedido</button></div>
+    {!items.length && <Notice kind="error">Os sabores deste pedido não foram encontrados. Adicione novamente os itens para salvar.</Notice>}
+    <div className="button-row"><button className="ghost-button" type="button" disabled={!addable.length || saving} onClick={() => setItems([...items, { flavorId: addable[0]?.id || 0, quantity: 1 }])}>+ Adicionar sabor</button><button className="primary-button" type="button" disabled={!items.length || saving} onClick={async () => { setSaving(true); setError(""); try { const result = await patch<{ order: Order }>(`/admin/orders/${order.id}`, { customerName, customerPhone, deliveryFee, items, ...(quickOrder ? { orderDate } : {}) }); onSave(result.order); } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível editar o pedido."); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar pedido"}</button></div>
   </section>;
 }
 
