@@ -775,7 +775,7 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
       const selectedOrderDate = orderDate(data.orderDate);
       await client.query(
         `UPDATE orders
-            SET created_at=($2::DATE + (created_at AT TIME ZONE 'America/Sao_Paulo')::TIME) AT TIME ZONE 'America/Sao_Paulo',
+            SET created_at=($2::DATE + TIME '12:00') AT TIME ZONE 'America/Sao_Paulo',
                 updated_at=NOW()
           WHERE id=$1`,
         [orderId, selectedOrderDate],

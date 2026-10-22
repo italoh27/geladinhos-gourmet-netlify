@@ -20,6 +20,11 @@ type Tab = "orders" | "quick" | "flavors" | "config" | "customers" | "analytics"
 const statusLabel: Record<string, string> = { pendente: "Recebido", em_preparacao: "Em preparação", saiu_entrega: "Saiu para entrega", entregue: "Entregue", cancelado: "Cancelado" };
 const localHost = () => ["localhost", "127.0.0.1"].includes(window.location.hostname);
 const actionError = (reason: unknown, fallback: string) => reason instanceof Error ? reason.message : fallback;
+const saoPauloDateFormatter = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", year: "numeric", month: "2-digit", day: "2-digit" });
+const dateInputValue = (value: string | Date) => {
+  const parts = Object.fromEntries(saoPauloDateFormatter.formatToParts(new Date(value)).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+};
 const todayISO = () => {
   const now = new Date();
   const year = now.getFullYear();
@@ -279,7 +284,8 @@ function OrderEditor({ order, flavors, onSave }: { order: Order; flavors: Flavor
   const [customerName, setCustomerName] = useState(order.customer.name);
   const [customerPhone, setCustomerPhone] = useState(order.customer.phone);
   const [deliveryFee, setDeliveryFee] = useState(order.deliveryFee);
-  const [orderDate, setOrderDate] = useState(order.createdAt.slice(0, 10));
+  const originalOrderDate = dateInputValue(order.createdAt);
+  const [orderDate, setOrderDate] = useState(originalOrderDate);
   const [items, setItems] = useState(editableItems);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -289,7 +295,7 @@ function OrderEditor({ order, flavors, onSave }: { order: Order; flavors: Flavor
     <div className="manager-create"><input aria-label="Nome do cliente" value={customerName} onChange={(event) => setCustomerName(event.target.value)} /><input aria-label="Telefone" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} />{quickOrder && <label className="quick-order-date"><span>Data do pedido</span><input type="date" value={orderDate} onChange={(event) => setOrderDate(event.target.value)} required /></label>}<label className="number-selector"><span>Valor da entrega</span><QuantityControl value={deliveryFee} min={0} max={999} step={0.5} formatValue={currency} label="Valor da entrega" onChange={setDeliveryFee} /></label></div>
     <div className="quick-items">{items.map((item, index) => <div className="quick-item" key={`${item.flavorId}-${index}`}><select value={item.flavorId} onChange={(event) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, flavorId: Number(event.target.value) } : current))}>{available.map((flavor) => <option key={flavor.id} value={flavor.id}>{flavor.name} · {currency(flavor.price)}</option>)}</select><QuantityControl value={item.quantity} min={1} max={999} onChange={(quantity) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, quantity } : current))} /><button className="danger-button" type="button" onClick={() => setItems(items.filter((_, currentIndex) => currentIndex !== index))}>Remover</button></div>)}</div>
     {!items.length && <Notice kind="error">Os sabores deste pedido não foram encontrados. Adicione novamente os itens para salvar.</Notice>}
-    <div className="button-row"><button className="ghost-button" type="button" disabled={!addable.length || saving} onClick={() => setItems([...items, { flavorId: addable[0]?.id || 0, quantity: 1 }])}>+ Adicionar sabor</button><button className="primary-button" type="button" disabled={!items.length || saving} onClick={async () => { setSaving(true); setError(""); try { const result = await patch<{ order: Order }>(`/admin/orders/${order.id}`, { customerName, customerPhone, deliveryFee, items, ...(quickOrder ? { orderDate } : {}) }); onSave(result.order); } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível editar o pedido."); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar pedido"}</button></div>
+    <div className="button-row"><button className="ghost-button" type="button" disabled={!addable.length || saving} onClick={() => setItems([...items, { flavorId: addable[0]?.id || 0, quantity: 1 }])}>+ Adicionar sabor</button><button className="primary-button" type="button" disabled={!items.length || saving} onClick={async () => { setSaving(true); setError(""); try { const result = await patch<{ order: Order }>(`/admin/orders/${order.id}`, { customerName, customerPhone, deliveryFee, items, ...(quickOrder && orderDate !== originalOrderDate ? { orderDate } : {}) }); onSave(result.order); } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível editar o pedido."); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar pedido"}</button></div>
   </section>;
 }
 
