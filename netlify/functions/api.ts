@@ -695,51 +695,65 @@ async function handleAdminOrderUpdate(request: Request, orderId: number) {
     if (data.items) {
       if (current.rows[0].status === "cancelado") throw new HttpError(409, "Reabra o pedido antes de editar seus itens.");
       if (!data.items.length) throw new HttpError(400, "O pedido precisa ter pelo menos um item.");
-      if (current.rows[0].loyalty_counted) await reverseOrderLoyalty(client, orderId);
-      if (!current.rows[0].stock_returned) {
-        await client.query(
-          `UPDATE flavors f SET stock=f.stock+i.quantity,updated_at=NOW()
-           FROM order_items i WHERE i.order_id=$1 AND i.flavor_id=f.id`,
-          [orderId],
-        );
-      }
       const grouped = new Map<number, number>();
       for (const item of data.items) grouped.set(positiveInt(item.flavorId, "Sabor"), (grouped.get(Number(item.flavorId)) || 0) + positiveInt(item.quantity));
-      const selected = await client.query<{ id: number; name: string; price: string; stock: number; active: boolean }>(
-        "SELECT id,name,price,stock,active FROM flavors WHERE id=ANY($1::BIGINT[]) ORDER BY id FOR UPDATE",
-        [[...grouped.keys()]],
+      const previous = await client.query<{ flavor_id: number | null; quantity: number }>(
+        "SELECT flavor_id,quantity FROM order_items WHERE order_id=$1 ORDER BY id FOR UPDATE",
+        [orderId],
       );
-      if (selected.rows.length !== grouped.size) throw new HttpError(409, "Um dos sabores não foi encontrado.");
-      const reservations = await client.query<{ flavor_id: number; quantity: number }>(
-        `SELECT i.flavor_id,SUM(i.quantity)::INTEGER quantity
-           FROM order_items i JOIN orders o ON o.id=i.order_id
-          WHERE i.flavor_id=ANY($1::BIGINT[]) AND o.id<>$2
-            AND o.payment_status='aguardando_pagamento' AND o.status<>'cancelado'
-            AND o.stock_returned=TRUE AND o.reservation_expires_at IS NOT NULL
-          GROUP BY i.flavor_id`,
-        [[...grouped.keys()], orderId],
-      );
-      const reservedByFlavor = new Map(reservations.rows.map((row) => [Number(row.flavor_id), Number(row.quantity)]));
-      let subtotal = 0;
-      for (const flavor of selected.rows) {
-        const quantity = grouped.get(Number(flavor.id)) || 0;
-        const available = Math.max(0, Number(flavor.stock) - (reservedByFlavor.get(Number(flavor.id)) || 0));
-        if (available < quantity) throw new HttpError(409, `Restam somente ${available} unidade(s) de ${flavor.name}.`);
-        subtotal += Number(flavor.price) * quantity;
-      }
-      await client.query("DELETE FROM order_items WHERE order_id=$1", [orderId]);
-      for (const flavor of selected.rows) {
-        const quantity = grouped.get(Number(flavor.id)) || 0;
-        if (!current.rows[0].stock_returned) {
-          await client.query("UPDATE flavors SET stock=stock-$2,updated_at=NOW() WHERE id=$1", [flavor.id, quantity]);
-        }
-        await client.query(
-          "INSERT INTO order_items (order_id,flavor_id,flavor_name,unit_price,quantity,line_total) VALUES ($1,$2,$3,$4,$5,$6)",
-          [orderId, flavor.id, flavor.name, Number(flavor.price), quantity, Number(flavor.price) * quantity],
+      const previousGrouped = new Map<number, number>();
+      for (const item of previous.rows) if (item.flavor_id) previousGrouped.set(Number(item.flavor_id), (previousGrouped.get(Number(item.flavor_id)) || 0) + Number(item.quantity));
+      const itemsChanged = grouped.size !== previousGrouped.size || [...grouped].some(([flavorId, quantity]) => previousGrouped.get(flavorId) !== quantity);
+      if (itemsChanged) {
+        if (current.rows[0].loyalty_counted) await reverseOrderLoyalty(client, orderId);
+        const affectedIds = [...new Set([...previousGrouped.keys(), ...grouped.keys()])].sort((a, b) => a - b);
+        const selected = await client.query<{ id: number; name: string; price: string; stock: number; active: boolean }>(
+          "SELECT id,name,price,stock,active FROM flavors WHERE id=ANY($1::BIGINT[]) ORDER BY id FOR UPDATE",
+          [affectedIds],
         );
+        const selectedById = new Map(selected.rows.map((flavor) => [Number(flavor.id), flavor]));
+        if ([...grouped.keys()].some((flavorId) => !selectedById.has(flavorId))) throw new HttpError(409, "Um dos sabores não foi encontrado.");
+        const reservations = await client.query<{ flavor_id: number; quantity: number }>(
+          `SELECT i.flavor_id,SUM(i.quantity)::INTEGER quantity
+             FROM order_items i JOIN orders o ON o.id=i.order_id
+            WHERE i.flavor_id=ANY($1::BIGINT[]) AND o.id<>$2
+              AND o.payment_status='aguardando_pagamento' AND o.status<>'cancelado'
+              AND o.stock_returned=TRUE AND o.reservation_expires_at IS NOT NULL
+            GROUP BY i.flavor_id`,
+          [[...grouped.keys()], orderId],
+        );
+        const reservedByFlavor = new Map(reservations.rows.map((row) => [Number(row.flavor_id), Number(row.quantity)]));
+        let subtotal = 0;
+        for (const [flavorId, quantity] of grouped) {
+          const flavor = selectedById.get(flavorId)!;
+          const returnedFromCurrentOrder = current.rows[0].stock_returned ? 0 : (previousGrouped.get(flavorId) || 0);
+          const available = Math.max(0, Number(flavor.stock) + returnedFromCurrentOrder - (reservedByFlavor.get(flavorId) || 0));
+          if (available < quantity) throw new HttpError(409, `Restam somente ${available} unidade(s) de ${flavor.name}.`);
+          subtotal += Number(flavor.price) * quantity;
+        }
+        if (!current.rows[0].stock_returned) for (const flavorId of affectedIds) {
+          const delta = (previousGrouped.get(flavorId) || 0) - (grouped.get(flavorId) || 0);
+          if (!delta) continue;
+          const adjusted = await client.query(
+            "UPDATE flavors SET stock=stock+$2,updated_at=NOW() WHERE id=$1 AND stock+$2>=0 RETURNING id",
+            [flavorId, delta],
+          );
+          if (!adjusted.rowCount) throw new HttpError(409, "Não há estoque suficiente para salvar esta alteração.");
+        }
+        await client.query("DELETE FROM order_items WHERE order_id=$1", [orderId]);
+        for (const [flavorId, quantity] of grouped) {
+          const flavor = selectedById.get(flavorId)!;
+          await client.query(
+            "INSERT INTO order_items (order_id,flavor_id,flavor_name,unit_price,quantity,line_total) VALUES ($1,$2,$3,$4,$5,$6)",
+            [orderId, flavor.id, flavor.name, Number(flavor.price), quantity, Number(flavor.price) * quantity],
+          );
+        }
+        const fee = data.deliveryFee === undefined ? Number(current.rows[0].delivery_fee) : money(data.deliveryFee);
+        await client.query("UPDATE orders SET subtotal=$2,delivery_fee=$3,total=$2+$3,updated_at=NOW() WHERE id=$1", [orderId, subtotal, fee]);
+      } else if (data.deliveryFee !== undefined) {
+        const fee = money(data.deliveryFee);
+        await client.query("UPDATE orders SET delivery_fee=$2,total=subtotal+$2,updated_at=NOW() WHERE id=$1", [orderId, fee]);
       }
-      const fee = data.deliveryFee === undefined ? Number(current.rows[0].delivery_fee) : money(data.deliveryFee);
-      await client.query("UPDATE orders SET subtotal=$2,delivery_fee=$3,total=$2+$3,updated_at=NOW() WHERE id=$1", [orderId, subtotal, fee]);
     } else if (data.deliveryFee !== undefined) {
       const fee = money(data.deliveryFee);
       await client.query("UPDATE orders SET delivery_fee=$2,total=subtotal+$2,updated_at=NOW() WHERE id=$1", [orderId, fee]);
@@ -1114,6 +1128,26 @@ async function handleAdminOrdersMarkPaid(request: Request) {
   return json({ orders: updated.filter(Boolean).map((order) => normalizeOrder(order as Record<string, unknown>)) });
 }
 
+async function handleAdminPendingOrderHistory(request: Request) {
+  only(request, "POST");
+  await requireAdmin(request);
+  const data = await body<{ orderIds: number[] }>(request);
+  const orderIds = [...new Set((data.orderIds || []).map((id) => positiveInt(id, "Pedido")))];
+  if (!orderIds.length) return json({ orders: [] });
+  if (orderIds.length > 500) throw new HttpError(400, "Selecione no máximo 500 pedidos por vez.");
+  const result = await query(
+    `SELECT o.*,
+      COALESCE(JSON_AGG(JSON_BUILD_OBJECT('flavorId',i.flavor_id,'name',i.flavor_name,'price',i.unit_price::FLOAT,'quantity',i.quantity,'total',i.line_total::FLOAT)
+        ORDER BY i.id) FILTER (WHERE i.id IS NOT NULL),'[]') AS items
+       FROM orders o LEFT JOIN order_items i ON i.order_id=o.id
+      WHERE o.id=ANY($1::BIGINT[]) AND o.visible_to_admin=TRUE AND o.status<>'cancelado'
+        AND o.payment_status='aguardando_pagamento' AND o.payment_method='pedido_rapido_admin'
+      GROUP BY o.id ORDER BY o.created_at DESC`,
+    [orderIds],
+  );
+  return json({ orders: result.rows.map((order) => normalizeOrder(order)) });
+}
+
 async function route(request: Request) {
   ensureSameOrigin(request);
   const path = routePath(request);
@@ -1140,6 +1174,7 @@ async function route(request: Request) {
   if (path === "/admin/export.csv") return handleAdminExport(request);
   if (path === "/admin/analytics/summary") return handleAdminAnalyticsSummary(request);
   if (path === "/admin/orders/mark-paid") return handleAdminOrdersMarkPaid(request);
+  if (path === "/admin/orders/pending-history") return handleAdminPendingOrderHistory(request);
 
   let match = path.match(/^\/cep\/(\d{8})$/);
   if (match) return handleCep(request, match[1]);

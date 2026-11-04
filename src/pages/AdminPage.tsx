@@ -289,13 +289,19 @@ function OrderEditor({ order, flavors, onSave }: { order: Order; flavors: Flavor
   const [items, setItems] = useState(editableItems);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const itemSignature = (values: Array<{ flavorId: number; quantity: number }>) => {
+    const grouped = new Map<number, number>();
+    for (const item of values) grouped.set(item.flavorId, (grouped.get(item.flavorId) || 0) + item.quantity);
+    return [...grouped].sort((a, b) => a[0] - b[0]).map(([flavorId, quantity]) => `${flavorId}:${quantity}`).join("|");
+  };
+  const originalItemsSignature = itemSignature(editableItems);
   return <section className="inline-order-editor">
     <h3>{quickOrder ? "Editar pedido rápido" : "Editar dados e itens"}</h3>
     {error && <Notice kind="error">{error}</Notice>}
     <div className="manager-create"><input aria-label="Nome do cliente" value={customerName} onChange={(event) => setCustomerName(event.target.value)} /><input aria-label="Telefone" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} />{quickOrder && <label className="quick-order-date"><span>Data do pedido</span><input type="date" value={orderDate} onChange={(event) => setOrderDate(event.target.value)} required /></label>}<label className="number-selector"><span>Valor da entrega</span><QuantityControl value={deliveryFee} min={0} max={999} step={0.5} formatValue={currency} label="Valor da entrega" onChange={setDeliveryFee} /></label></div>
     <div className="quick-items">{items.map((item, index) => <div className="quick-item" key={`${item.flavorId}-${index}`}><select value={item.flavorId} onChange={(event) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, flavorId: Number(event.target.value) } : current))}>{available.map((flavor) => <option key={flavor.id} value={flavor.id}>{flavor.name} · {currency(flavor.price)}</option>)}</select><QuantityControl value={item.quantity} min={1} max={999} onChange={(quantity) => setItems(items.map((current, currentIndex) => currentIndex === index ? { ...current, quantity } : current))} /><button className="danger-button" type="button" onClick={() => setItems(items.filter((_, currentIndex) => currentIndex !== index))}>Remover</button></div>)}</div>
     {!items.length && <Notice kind="error">Os sabores deste pedido não foram encontrados. Adicione novamente os itens para salvar.</Notice>}
-    <div className="button-row"><button className="ghost-button" type="button" disabled={!addable.length || saving} onClick={() => setItems([...items, { flavorId: addable[0]?.id || 0, quantity: 1 }])}>+ Adicionar sabor</button><button className="primary-button" type="button" disabled={!items.length || saving} onClick={async () => { setSaving(true); setError(""); try { const result = await patch<{ order: Order }>(`/admin/orders/${order.id}`, { customerName, customerPhone, deliveryFee, items, ...(quickOrder && orderDate !== originalOrderDate ? { orderDate } : {}) }); onSave(result.order); } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível editar o pedido."); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar pedido"}</button></div>
+    <div className="button-row"><button className="ghost-button" type="button" disabled={!addable.length || saving} onClick={() => setItems([...items, { flavorId: addable[0]?.id || 0, quantity: 1 }])}>+ Adicionar sabor</button><button className="primary-button" type="button" disabled={!items.length || saving} onClick={async () => { setSaving(true); setError(""); try { const itemsChanged = itemSignature(items) !== originalItemsSignature; const result = await patch<{ order: Order }>(`/admin/orders/${order.id}`, { customerName, customerPhone, deliveryFee, ...(itemsChanged ? { items } : {}), ...(quickOrder && orderDate !== originalOrderDate ? { orderDate } : {}) }); onSave(result.order); } catch (reason) { setError(reason instanceof Error ? reason.message : "Não foi possível editar o pedido."); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar pedido"}</button></div>
   </section>;
 }
 
@@ -445,6 +451,8 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
   const [filters, setFilters] = useState({ from: "", to: "", payment: "", registered: false });
   const [updatingCustomer, setUpdatingCustomer] = useState("");
   const [paymentConfirmation, setPaymentConfirmation] = useState<AnalyticsCustomerTotal | null>(null);
+  const [pendingHistory, setPendingHistory] = useState<{ customer: AnalyticsCustomerTotal; orders: Order[] } | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState("");
   const [error, setError] = useState("");
   const [serverAnalytics, setServerAnalytics] = useState<AnalyticsSummary | null>(null);
   const periodOrders = useMemo(() => orders.filter((order) => {
@@ -524,6 +532,15 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
     } catch (reason) { setError(actionError(reason, "Não foi possível marcar os pedidos como pagos.")); }
     finally { setUpdatingCustomer(""); }
   }
+  async function openPendingHistory(customer: AnalyticsCustomerTotal) {
+    const key = customerKey(customer.name);
+    setLoadingHistory(key); setError("");
+    try {
+      const result = await post<{ orders: Order[] }>("/admin/orders/pending-history", { orderIds: customer.pendingOrderIds });
+      setPendingHistory({ customer, orders: result.orders });
+    } catch (reason) { setError(actionError(reason, "Não foi possível carregar o histórico pendente.")); }
+    finally { setLoadingHistory(""); }
+  }
   const exportQuery = new URLSearchParams({ ...(filters.from ? { from: filters.from } : {}), ...(filters.to ? { to: filters.to } : {}), ...(filters.payment ? { payment: filters.payment } : {}) }).toString();
   return (
     <section className="manager glass-card analytics-section">
@@ -555,7 +572,7 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
             <span className="customer-paid" data-label="Pago">{currency(customer.paid)}</span>
             <span className="customer-pending" data-label="A receber">{currency(customer.pending)}</span>
             <b data-label="Total">{currency(customer.total)}</b>
-            <button type="button" className="success-button customer-paid-button" disabled={updatingCustomer === customerKey(customer.name)} onClick={() => { setError(""); setPaymentConfirmation(customer); }}>{updatingCustomer === customerKey(customer.name) ? "Salvando..." : "Marcar pago"}</button>
+            <div className="analytics-customer-actions"><button type="button" className="ghost-button" disabled={loadingHistory === customerKey(customer.name)} onClick={() => void openPendingHistory(customer)}>{loadingHistory === customerKey(customer.name) ? "Abrindo..." : "Ver pedidos"}</button><button type="button" className="success-button customer-paid-button" disabled={updatingCustomer === customerKey(customer.name)} onClick={() => { setError(""); setPaymentConfirmation(customer); }}>{updatingCustomer === customerKey(customer.name) ? "Salvando..." : "Marcar pago"}</button></div>
           </div>)}
           {!customerTotals.length && <Notice>Nenhum cliente com valor a receber neste período.</Notice>}
         </div>
@@ -575,6 +592,7 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
           <div className="payment-confirm-actions"><button type="button" className="ghost-button" disabled={Boolean(updatingCustomer)} onClick={() => setPaymentConfirmation(null)}>Cancelar</button><button type="button" className="success-button" disabled={Boolean(updatingCustomer)} onClick={() => void markCustomerPaid(paymentConfirmation)}>{updatingCustomer ? "Confirmando..." : "Confirmar pagamento"}</button></div>
         </article>
       </div>, document.body)}
+      {pendingHistory && createPortal(<dialog className="admin-order-dialog" open onClick={(event) => { if (event.target === event.currentTarget) setPendingHistory(null); }}><article className="admin-order-detail glass-card pending-history-dialog"><header><div><span>Pedidos pendentes</span><h2>{pendingHistory.customer.name}</h2><p>{pendingHistory.orders.length} pedido(s) aguardando pagamento · {currency(pendingHistory.orders.reduce((sum, order) => sum + order.total, 0))}</p></div><button type="button" className="dialog-close" onClick={() => setPendingHistory(null)} aria-label="Fechar">×</button></header><div className="pending-history-list">{pendingHistory.orders.map((order) => <article className="pending-history-order" key={order.id}><div><strong>Pedido #{order.id}</strong><small>{dateTime(order.createdAt)} · {statusLabel[order.status]}</small></div><div className="pending-history-items">{order.items.map((item, index) => <span key={`${order.id}-${item.flavorId || item.name}-${index}`}>{item.quantity}× {item.name}</span>)}</div><b>{currency(order.total)}</b></article>)}{!pendingHistory.orders.length && <Notice>Nenhum pedido pendente foi encontrado para este cliente.</Notice>}</div></article></dialog>, document.body)}
     </section>
   );
 }
