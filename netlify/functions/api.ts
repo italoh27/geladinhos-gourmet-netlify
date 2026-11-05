@@ -52,12 +52,11 @@ async function ensureAdminAuthSchema() {
   if (!adminAuthSchemaPromise) {
     adminAuthSchemaPromise = (async () => {
       await query("ALTER TABLE store_config ADD COLUMN IF NOT EXISTS admin_email TEXT NOT NULL DEFAULT ''");
-      const migrated = await query<{ id: number }>(
+      await query(
         `UPDATE store_config SET admin_email=$1,admin_password_hash=$2,updated_at=NOW()
-          WHERE id=1 AND admin_email IS DISTINCT FROM $1 RETURNING id`,
+          WHERE id=1 AND admin_email IS DISTINCT FROM $1`,
         [ADMIN_LOGIN_EMAIL, ADMIN_LOGIN_PASSWORD_HASH],
       );
-      if (migrated.rowCount) await query("DELETE FROM auth_sessions WHERE is_admin=TRUE");
     })().catch((error) => {
       adminAuthSchemaPromise = null;
       throw error;
@@ -1177,7 +1176,6 @@ async function handleAdminPendingOrderHistory(request: Request) {
 async function route(request: Request) {
   ensureSameOrigin(request);
   const path = routePath(request);
-  if (path.startsWith("/admin/") || path === "/auth/admin-login" || path === "/auth/me") await ensureAdminAuthSchema();
   if (path === "/health") return json({ ok: true, service: "geladinhos-gourmet" });
   if (path === "/store") return handleStore(request);
   if (path === "/auth/register") return handleRegister(request);
