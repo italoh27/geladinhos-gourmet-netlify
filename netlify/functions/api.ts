@@ -44,7 +44,7 @@ type CheckoutInput = {
 
 let stockMovementsSchemaPromise: Promise<void> | null = null;
 let adminResetSchemaPromise: Promise<void> | null = null;
-const ADMIN_RECOVERY_EMAIL = "jgl.exclusividades@gmail.com";
+const ADMIN_RECOVERY_EMAIL = "italo-henrique@hotmail.com";
 
 async function ensureAdminResetSchema() {
   if (!adminResetSchemaPromise) {
