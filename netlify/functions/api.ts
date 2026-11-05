@@ -27,6 +27,7 @@ type StoreConfig = {
   pix_key: string;
   pix_name: string;
   pix_bank: string;
+  admin_email: string;
   admin_password_hash: string;
 };
 
@@ -43,6 +44,26 @@ type CheckoutInput = {
 };
 
 let stockMovementsSchemaPromise: Promise<void> | null = null;
+let adminAuthSchemaPromise: Promise<void> | null = null;
+const ADMIN_LOGIN_EMAIL = "jgl.exclusividades@gmail.com";
+const ADMIN_LOGIN_PASSWORD_HASH = "scrypt$058d0623151b99f6db5a8a5f1789297c$64a7125e889177e9d40c2e1db9ae46d70be1a6131c85f4e4d5c8b5ddeb000aec11651d32a8c6ac2ad79a648593d7223d48e6200206e2a01ca8b94fc15ac22642";
+
+async function ensureAdminAuthSchema() {
+  if (!adminAuthSchemaPromise) {
+    adminAuthSchemaPromise = (async () => {
+      await query("ALTER TABLE store_config ADD COLUMN IF NOT EXISTS admin_email TEXT NOT NULL DEFAULT ''");
+      await query(
+        `UPDATE store_config SET admin_email=$1,admin_password_hash=$2,updated_at=NOW()
+          WHERE id=1 AND admin_email IS DISTINCT FROM $1`,
+        [ADMIN_LOGIN_EMAIL, ADMIN_LOGIN_PASSWORD_HASH],
+      );
+    })().catch((error) => {
+      adminAuthSchemaPromise = null;
+      throw error;
+    });
+  }
+  await adminAuthSchemaPromise;
+}
 
 async function ensureStockMovementsSchema() {
   if (!stockMovementsSchemaPromise) {
@@ -276,10 +297,13 @@ async function handleLogin(request: Request) {
 
 async function handleAdminLogin(request: Request) {
   only(request, "POST");
-  const data = await body<{ password: string }>(request);
+  const data = await body<{ email: string; password: string }>(request);
+  await ensureAdminAuthSchema();
   const config = await storeConfig();
+  const email = normalizeEmail(data.email);
+  if (email !== String(config.admin_email || "").toLowerCase()) throw new HttpError(401, "E-mail ou senha administrativa incorretos.");
   if (config.admin_password_hash) {
-    if (!(await verifyPassword(String(data.password || ""), config.admin_password_hash))) throw new HttpError(401, "Senha administrativa incorreta.");
+    if (!(await verifyPassword(String(data.password || ""), config.admin_password_hash))) throw new HttpError(401, "E-mail ou senha administrativa incorretos.");
     const session = await createSession(request, { admin: true });
     return json({ ok: true }, { headers: { "Set-Cookie": session.cookie } });
   }
@@ -295,6 +319,7 @@ async function handleAdminLogin(request: Request) {
 async function handleAdminChangePassword(request: Request) {
   only(request, "POST");
   await requireAdmin(request);
+  await ensureAdminAuthSchema();
   const data = await body<{ currentPassword: string; newPassword: string }>(request);
   const config = await storeConfig();
   let currentValid = false;
