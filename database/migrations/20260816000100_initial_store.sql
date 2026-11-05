@@ -67,6 +67,15 @@ CREATE TABLE password_reset_tokens (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE admin_password_reset_tokens (
+  id BIGSERIAL PRIMARY KEY,
+  code_hash TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 5),
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE orders (
   id BIGSERIAL PRIMARY KEY,
   public_token TEXT NOT NULL UNIQUE,

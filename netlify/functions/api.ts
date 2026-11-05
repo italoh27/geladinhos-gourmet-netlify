@@ -5,7 +5,7 @@ import { clearSessionCookie, createSession, deleteSession, getSession, hashPassw
 import { query, transaction } from "./_shared/db";
 import { commitStock, getOrder, releaseStock, returnStock } from "./_shared/orders";
 import { applyInfinitePayStatus, checkInfinitePay, createInfinitePayCheckout, infinitePayEnabled } from "./_shared/payment";
-import { recoveryEmailEnabled, sendPasswordResetCode } from "./_shared/email";
+import { recoveryEmailEnabled, sendAdminPasswordResetCode, sendPasswordResetCode } from "./_shared/email";
 import { deliverLoyaltyReward, processOrderLoyalty, reverseOrderLoyalty, setLoyaltyProgress } from "./_shared/loyalty";
 
 type StoreConfig = {
@@ -43,6 +43,25 @@ type CheckoutInput = {
 };
 
 let stockMovementsSchemaPromise: Promise<void> | null = null;
+let adminResetSchemaPromise: Promise<void> | null = null;
+const ADMIN_RECOVERY_EMAIL = "jgl.exclusividades@gmail.com";
+
+async function ensureAdminResetSchema() {
+  if (!adminResetSchemaPromise) {
+    adminResetSchemaPromise = query(`CREATE TABLE IF NOT EXISTS admin_password_reset_tokens (
+      id BIGSERIAL PRIMARY KEY,
+      code_hash TEXT NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 5),
+      expires_at TIMESTAMPTZ NOT NULL,
+      used_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )`).then(() => undefined).catch((error) => {
+      adminResetSchemaPromise = null;
+      throw error;
+    });
+  }
+  await adminResetSchemaPromise;
+}
 
 async function ensureStockMovementsSchema() {
   if (!stockMovementsSchemaPromise) {
@@ -325,6 +344,67 @@ function resetCodeHash(customerId: number, code: string) {
   const secret = process.env.SESSION_SECRET || "";
   if (secret.length < 24) throw new Error("SESSION_SECRET precisa ter pelo menos 24 caracteres.");
   return createHash("sha256").update(`${secret}:reset:${customerId}:${code}`).digest("hex");
+}
+
+function adminResetCodeHash(code: string) {
+  const secret = process.env.SESSION_SECRET || "";
+  if (secret.length < 24) throw new Error("SESSION_SECRET precisa ter pelo menos 24 caracteres.");
+  return createHash("sha256").update(`${secret}:admin-reset:${code}`).digest("hex");
+}
+
+async function handleAdminPasswordResetRequest(request: Request) {
+  only(request, "POST");
+  if (!recoveryEmailEnabled()) throw new HttpError(503, "A recuperação automática ainda não foi configurada pela loja.");
+  const data = await body<{ email: string }>(request);
+  const email = normalizeEmail(data.email);
+  const response = { ok: true, message: "Se o e-mail estiver correto, o código chegará em instantes." };
+  if (email !== ADMIN_RECOVERY_EMAIL) return json(response);
+  await ensureAdminResetSchema();
+  const recent = await query<{ created_at: string }>("SELECT created_at FROM admin_password_reset_tokens ORDER BY created_at DESC LIMIT 1");
+  if (recent.rows[0] && Date.now() - new Date(recent.rows[0].created_at).getTime() < 60_000) return json(response);
+  const code = String(randomInt(100000, 1000000));
+  const tokenId = await transaction(async (client) => {
+    await client.query("UPDATE admin_password_reset_tokens SET used_at=NOW() WHERE used_at IS NULL");
+    const created = await client.query<{ id: number }>(
+      "INSERT INTO admin_password_reset_tokens (code_hash,expires_at) VALUES ($1,NOW()+INTERVAL '10 minutes') RETURNING id",
+      [adminResetCodeHash(code)],
+    );
+    return Number(created.rows[0].id);
+  });
+  try {
+    await sendAdminPasswordResetCode(ADMIN_RECOVERY_EMAIL, code);
+  } catch (error) {
+    await query("UPDATE admin_password_reset_tokens SET used_at=NOW() WHERE id=$1", [tokenId]);
+    throw error;
+  }
+  return json(response);
+}
+
+async function handleAdminPasswordResetConfirm(request: Request) {
+  only(request, "POST");
+  const data = await body<{ email: string; code: string; password: string }>(request);
+  const email = normalizeEmail(data.email);
+  const code = cleanText(data.code, 6);
+  if (email !== ADMIN_RECOVERY_EMAIL || !/^\d{6}$/.test(code)) throw new HttpError(400, "Código inválido ou vencido.");
+  const passwordHash = await hashPassword(String(data.password || ""));
+  await ensureAdminResetSchema();
+  await transaction(async (client) => {
+    const tokens = await client.query<{ id: number; code_hash: string; attempts: number }>(
+      "SELECT id,code_hash,attempts FROM admin_password_reset_tokens WHERE used_at IS NULL AND expires_at>NOW() ORDER BY id DESC LIMIT 1 FOR UPDATE",
+    );
+    const token = tokens.rows[0];
+    if (!token || token.code_hash !== adminResetCodeHash(code)) {
+      if (token) await client.query(
+        "UPDATE admin_password_reset_tokens SET attempts=attempts+1,used_at=CASE WHEN attempts+1>=5 THEN NOW() ELSE used_at END WHERE id=$1",
+        [token.id],
+      );
+      throw new HttpError(400, "Código inválido ou vencido.");
+    }
+    await client.query("UPDATE store_config SET admin_password_hash=$1,updated_at=NOW() WHERE id=1", [passwordHash]);
+    await client.query("UPDATE admin_password_reset_tokens SET used_at=NOW() WHERE id=$1", [token.id]);
+    await client.query("DELETE FROM auth_sessions WHERE is_admin=TRUE");
+  });
+  return json({ ok: true, message: "Senha administrativa alterada. Entre com a nova senha." });
 }
 
 async function handlePasswordResetRequest(request: Request) {
@@ -1156,6 +1236,8 @@ async function route(request: Request) {
   if (path === "/auth/register") return handleRegister(request);
   if (path === "/auth/login") return handleLogin(request);
   if (path === "/auth/admin-login") return handleAdminLogin(request);
+  if (path === "/auth/admin-password-reset/request") return handleAdminPasswordResetRequest(request);
+  if (path === "/auth/admin-password-reset/confirm") return handleAdminPasswordResetConfirm(request);
   if (path === "/auth/logout") return handleLogout(request);
   if (path === "/auth/me") return handleMe(request);
   if (path === "/auth/password-reset/request") return handlePasswordResetRequest(request);
