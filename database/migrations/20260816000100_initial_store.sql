@@ -18,7 +18,6 @@ CREATE TABLE store_config (
   pix_key TEXT NOT NULL DEFAULT '',
   pix_name TEXT NOT NULL DEFAULT '',
   pix_bank TEXT NOT NULL DEFAULT 'InfinitePay',
-  admin_email TEXT NOT NULL DEFAULT '',
   admin_password_hash TEXT NOT NULL DEFAULT '',
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
