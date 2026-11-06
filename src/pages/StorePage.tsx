@@ -55,7 +55,7 @@ export function StorePage() {
                 <button type="button" className="primary-button" disabled={!config.open || !personalAvailable} onClick={() => {
                   cart.add(flavor, selected);
                   setQuantities((current) => ({ ...current, [flavor.id]: 1 }));
-                }}>Adicionar ao carrinho</button>
+                }}><span className="desktop-add-label">Adicionar ao carrinho</span><span className="mobile-add-label">Adicionar</span></button>
               </div>
             </article>
           );

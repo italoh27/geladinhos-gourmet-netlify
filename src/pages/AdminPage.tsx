@@ -13,7 +13,16 @@ type Metrics = { total: number; paid: number; pending: number; cancelled: number
 type CustomerRow = { id: number; name: string; phone: string; email: string; created_at: string; order_count: number; total_paid: number; outstanding_balance: number; progress_5: number; progress_7: number; rewards_5: number; rewards_7: number };
 type LoyaltyRow = { id?: number; customer_id: number; name: string; phone: string; tier?: number; quantity?: number; progress_5?: number; progress_7?: number; rewards_5?: number; rewards_7?: number };
 type AnalyticsCustomerTotal = { name: string; orders: number; units: number; total: number; paid: number; pending: number; lastOrder: string; pendingOrderIds: number[] };
-type AnalyticsSummary = { summary: { orders: number; paid_orders: number; total: number; paid: number; pending: number; units: number }; customers: Array<{ name: string; orders: number; units: number; total: number; paid: number; pending: number; last_order: string; pending_order_ids: number[] }> };
+type AnalyticsSummary = {
+  summary: { orders: number; paid_orders: number; pending_orders: number; cancelled_orders: number; registered_buyers: number; total: number; paid: number; pending: number; delivery_revenue: number; units: number; average_ticket: number };
+  customers: Array<{ name: string; orders: number; units: number; total: number; paid: number; pending: number; last_order: string; pending_order_ids: number[] }>;
+  flavors: Array<{ name: string; units: number; orders: number; revenue: number }>;
+  days: Array<{ day: string; orders: number; paid_orders: number; units: number; revenue: number }>;
+  payments: Array<{ method: string; orders: number; revenue: number }>;
+  statuses: Array<{ status: string; orders: number }>;
+  topCustomers: Array<{ name: string; orders: number; units: number; paid: number; last_order: string }>;
+  stock: { total_units: number; active_flavors: number; low_stock: number; out_of_stock: number };
+};
 type Overview = { config: StoreConfig; flavors: Flavor[]; orders: Order[]; metrics: Metrics; loyalty: LoyaltyRow[]; loyaltyProgress: LoyaltyRow[]; stockAddedToday: number; serverTime?: string };
 type AdminUpdates = { orders: Order[]; metrics: Metrics; stockAddedToday: number; serverTime: string };
 type Tab = "orders" | "quick" | "flavors" | "config" | "customers" | "analytics";
@@ -350,8 +359,37 @@ function LoyaltyProgressEditor({ item, onReload }: { item: LoyaltyRow; onReload:
   return <article><div><strong>{item.name}</strong><span>{item.phone}</span>{message && <small className="action-success">{message}</small>}{error && <small className="action-error">{error}</small>}</div><label className="number-selector"><span>R$ 5</span><QuantityControl value={progress5} min={0} max={9} label="Progresso de cinco reais" onChange={setProgress5} /></label><label className="number-selector"><span>R$ 7</span><QuantityControl value={progress7} min={0} max={9} label="Progresso de sete reais" onChange={setProgress7} /></label><button type="button" className="ghost-button" disabled={saving} onClick={async () => { setSaving(true); setError(""); setMessage(""); try { await patch(`/admin/loyalty/customer/${item.customer_id}`, { progress5, progress7 }); setMessage("Progresso salvo."); onReload(); } catch (reason) { setError(actionError(reason, "Não foi possível salvar.")); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar"}</button></article>;
 }
 
+async function prepareFlavorImage(file: File) {
+  if (!file.type.startsWith("image/")) throw new Error("Escolha uma foto válida.");
+  if (file.size > 15 * 1024 * 1024) throw new Error("A foto original deve ter no máximo 15 MB.");
+  const source = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Não foi possível ler a foto."));
+    reader.readAsDataURL(file);
+  });
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const element = new Image();
+    element.onload = () => resolve(element);
+    element.onerror = () => reject(new Error("Não foi possível abrir a foto."));
+    element.src = source;
+  });
+  const maximum = 900;
+  const scale = Math.min(1, maximum / Math.max(image.naturalWidth, image.naturalHeight));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+  canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Não foi possível preparar a foto.");
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  let result = canvas.toDataURL("image/webp", 0.82);
+  if (result.length > 950_000) result = canvas.toDataURL("image/webp", 0.68);
+  if (result.length > 1_000_000) throw new Error("A foto ficou muito grande. Escolha outra imagem.");
+  return result;
+}
+
 function FlavorManager({ flavors, onChange }: { flavors: Flavor[]; onChange: (flavors: Flavor[]) => void }) {
-  const [draft, setDraft] = useState({ name: "", price: 5, stock: 0, imageUrl: "" });
+  const [draft, setDraft] = useState({ name: "", price: 5, stock: 0, imageUrl: "", imageDataUrl: "" });
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
@@ -361,7 +399,7 @@ function FlavorManager({ flavors, onChange }: { flavors: Flavor[]; onChange: (fl
     try {
       const result = await post<{ flavor: Flavor }>("/admin/flavors", draft);
       onChange([...flavors, result.flavor]);
-      setDraft({ name: "", price: 5, stock: 0, imageUrl: "" });
+      setDraft({ name: "", price: 5, stock: 0, imageUrl: "", imageDataUrl: "" });
       setMessage(`${result.flavor.name} foi adicionado.`);
     } catch (reason) { setError(actionError(reason, "Não foi possível adicionar o sabor.")); }
     finally { setCreating(false); }
@@ -377,7 +415,11 @@ function FlavorManager({ flavors, onChange }: { flavors: Flavor[]; onChange: (fl
       <input aria-label="Nome do novo sabor" placeholder="Nome do sabor" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} required />
       <label className="number-selector"><span>Preço</span><QuantityControl value={draft.price} min={0} max={999} step={0.5} formatValue={currency} label="Preço do novo sabor" onChange={(price) => setDraft({ ...draft, price })} /></label>
       <label className="number-selector"><span>Estoque</span><QuantityControl value={draft.stock} min={0} max={9999} label="Estoque do novo sabor" onChange={(stock) => setDraft({ ...draft, stock })} /></label>
-      <input aria-label="Caminho da imagem" placeholder="Caminho da imagem" value={draft.imageUrl} onChange={(e) => setDraft({ ...draft, imageUrl: e.target.value })} />
+      <label className="flavor-photo-picker create-photo-picker">
+        {draft.imageDataUrl ? <img src={draft.imageDataUrl} alt="Prévia do novo sabor" /> : <span>📷</span>}
+        <span>{draft.imageDataUrl ? "Trocar foto" : "Adicionar foto"}</span>
+        <input type="file" accept="image/jpeg,image/png,image/webp" required={!draft.imageDataUrl} onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; setError(""); try { setDraft({ ...draft, imageDataUrl: await prepareFlavorImage(file) }); } catch (reason) { setError(actionError(reason, "Não foi possível preparar a foto.")); event.target.value = ""; } }} />
+      </label>
       <button className="primary-button" disabled={creating}>{creating ? "Adicionando..." : "Adicionar sabor"}</button>
     </form>
     <div className="flavor-manager-list">{flavors.map((flavor) => <FlavorEditor key={flavor.id} flavor={flavor} onSave={(next) => onChange(flavors.map((item) => item.id === next.id ? next : item))} />)}</div>
@@ -386,16 +428,21 @@ function FlavorManager({ flavors, onChange }: { flavors: Flavor[]; onChange: (fl
 
 function FlavorEditor({ flavor, onSave }: { flavor: Flavor; onSave: (flavor: Flavor) => void }) {
   const [value, setValue] = useState(flavor);
+  const [imageDataUrl, setImageDataUrl] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   return <article className="flavor-editor" id={`sabor-${value.id}`}>
-    <img src={value.imageUrl} alt={value.name} width="64" height="64" />
+    <label className="flavor-photo-picker editor-photo-picker">
+      <img src={imageDataUrl || value.imageUrl} alt={value.name} width="64" height="64" />
+      <span>Trocar foto</span>
+      <input type="file" accept="image/jpeg,image/png,image/webp" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; setError(""); try { setImageDataUrl(await prepareFlavorImage(file)); } catch (reason) { setError(actionError(reason, "Não foi possível preparar a foto.")); event.target.value = ""; } }} />
+    </label>
     <label className="editor-field"><span>Nome</span><input aria-label={`Nome de ${value.name}`} value={value.name} onChange={(e) => setValue({ ...value, name: e.target.value })} /></label>
     <label className="number-selector"><span>Preço</span><QuantityControl value={value.price} min={0} max={999} step={0.5} formatValue={currency} label={`Preço de ${value.name}`} onChange={(price) => setValue({ ...value, price })} /></label>
     <label className="number-selector"><span>Estoque</span><QuantityControl value={value.stock} min={0} max={9999} label={`Estoque de ${value.name}`} onChange={(stock) => setValue({ ...value, stock })} /></label>
     <label className="switch-line"><input type="checkbox" checked={value.active} onChange={(e) => setValue({ ...value, active: e.target.checked })} />Ativo</label>
-    <button type="button" className="primary-button" disabled={saving} onClick={async () => { setSaving(true); setMessage(""); setError(""); try { const result = await patch<{ flavor: Flavor }>(`/admin/flavors/${value.id}`, value); onSave(result.flavor); setMessage("Salvo."); } catch (reason) { setError(actionError(reason, "Não foi possível salvar.")); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar"}</button>
+    <button type="button" className="primary-button" disabled={saving} onClick={async () => { setSaving(true); setMessage(""); setError(""); try { let result = await patch<{ flavor: Flavor }>(`/admin/flavors/${value.id}`, value); if (imageDataUrl) result = await post<{ flavor: Flavor }>(`/admin/flavors/${value.id}/image`, { dataUrl: imageDataUrl }); setValue(result.flavor); setImageDataUrl(""); onSave(result.flavor); setMessage("Sabor e foto salvos."); } catch (reason) { setError(actionError(reason, "Não foi possível salvar.")); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar"}</button>
     {(message || error) && <small className={error ? "action-error editor-feedback" : "action-success editor-feedback"}>{error || message}</small>}
   </article>;
 }
@@ -505,13 +552,18 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
   const receivedTotal = Number(summary?.paid ?? revenue);
   const paidOrderCount = Number(summary?.paid_orders ?? paid.length);
   const soldUnits = Number(summary?.units ?? units);
+  const orderCount = Number(summary?.orders ?? validPeriodOrders.length);
+  const pendingOrderCount = Number(summary?.pending_orders ?? validPeriodOrders.filter((order) => order.paymentStatus === "aguardando_pagamento").length);
+  const cancelledOrderCount = Number(summary?.cancelled_orders ?? periodOrders.filter((order) => order.status === "cancelado" || ["cancelado", "expirado"].includes(order.paymentStatus)).length);
+  const paymentRate = orderCount ? (paidOrderCount / orderCount) * 100 : 0;
+  const paymentNames: Record<string, string> = { infinitepay: "InfinitePay", pix: "Pix", pix_manual: "Pix manual", pedido_rapido_admin: "Pedido rápido", "não informado": "Não informado" };
   const ordersRevision = orders.reduce((latest, order) => order.updatedAt > latest ? order.updatedAt : latest, "");
   useEffect(() => {
-    const params = new URLSearchParams({ ...(filters.from ? { from: filters.from } : {}), ...(filters.to ? { to: filters.to } : {}), ...(filters.registered ? { registered: "1" } : {}) });
+    const params = new URLSearchParams({ ...(filters.from ? { from: filters.from } : {}), ...(filters.to ? { to: filters.to } : {}), ...(filters.payment ? { payment: filters.payment } : {}), ...(filters.registered ? { registered: "1" } : {}) });
     let active = true;
     api<AnalyticsSummary>(`/admin/analytics/summary${params.size ? `?${params}` : ""}`).then((result) => { if (active) setServerAnalytics(result); }).catch((reason) => { if (active) setError(actionError(reason, "Não foi possível atualizar os totais.")); });
     return () => { active = false; };
-  }, [filters.from, filters.to, filters.registered, ordersRevision]);
+  }, [filters.from, filters.to, filters.payment, filters.registered, ordersRevision]);
   for (const order of filtered) {
     const day = order.createdAt.slice(0, 10);
     const currentDay = dayMap.get(day) || { orders: 0, units: 0, revenue: 0 };
@@ -521,6 +573,8 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
       current.quantity += item.quantity; current.revenue += item.total; flavorMap.set(item.name, current);
     }
   }
+  const flavorRows = serverAnalytics?.flavors || [...flavorMap.entries()].map(([name, value]) => ({ name, units: value.quantity, orders: 0, revenue: value.revenue })).sort((a, b) => b.units - a.units);
+  const dayRows = serverAnalytics?.days || [...dayMap.entries()].map(([day, value]) => ({ day, orders: value.orders, paid_orders: 0, units: value.units, revenue: value.revenue })).sort((a, b) => b.day.localeCompare(a.day));
   async function markCustomerPaid(customer: AnalyticsCustomerTotal) {
     const key = customerKey(customer.name);
     if (!customer.pendingOrderIds.length) return;
@@ -555,12 +609,18 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
         <a className="success-button" href={`/api/admin/export.csv${exportQuery ? `?${exportQuery}` : ""}`}>Exportar para Excel</a>
       </div>
       <div className="analytics-grid">
-        <article className="analytics-kpi"><span>Pedidos no período</span><strong>{Number(summary?.orders ?? validPeriodOrders.length)}</strong><small>Sem cancelados</small></article>
+        <article className="analytics-kpi"><span>Pedidos no período</span><strong>{orderCount}</strong><small>Sem cancelados</small></article>
         <article className="analytics-kpi total"><span>Valor total</span><strong>{currency(grossTotal)}</strong><small>Sem cancelados</small></article>
         <article className="analytics-kpi paid"><span>Total recebido</span><strong>{currency(receivedTotal)}</strong><small>{paidOrderCount} pedido(s) pago(s)</small></article>
         <article className="analytics-kpi pending"><span>Total a receber</span><strong>{currency(outstanding)}</strong><small>Valores ainda não pagos</small></article>
         <article className="analytics-kpi"><span>Unidades vendidas</span><strong>{soldUnits}</strong><small>Somente pedidos pagos</small></article>
         <article className="analytics-kpi"><span>Ticket médio pago</span><strong>{currency(paidOrderCount ? receivedTotal / paidOrderCount : 0)}</strong><small>Média por pedido</small></article>
+        <article className="analytics-kpi paid"><span>Taxa de pagamento</span><strong>{paymentRate.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%</strong><small>{paidOrderCount} de {orderCount} pedido(s)</small></article>
+        <article className="analytics-kpi pending"><span>Pedidos aguardando</span><strong>{pendingOrderCount}</strong><small>Aguardando pagamento</small></article>
+        <article className="analytics-kpi"><span>Taxas de entrega</span><strong>{currency(Number(summary?.delivery_revenue || 0))}</strong><small>Recebidas no período</small></article>
+        <article className="analytics-kpi"><span>Clientes compradores</span><strong>{Number(summary?.registered_buyers || 0)}</strong><small>Clientes cadastrados no período</small></article>
+        <article className="analytics-kpi"><span>Estoque atual</span><strong>{Number(serverAnalytics?.stock?.total_units || 0)}</strong><small>{Number(serverAnalytics?.stock?.active_flavors || 0)} sabores ativos</small></article>
+        <article className="analytics-kpi alert"><span>Atenção ao estoque</span><strong>{Number(serverAnalytics?.stock?.low_stock || 0)}</strong><small>{Number(serverAnalytics?.stock?.out_of_stock || 0)} esgotado(s) · {cancelledOrderCount} cancelado(s)</small></article>
       </div>
       <article className="analytics-customer-card">
         <div className="analytics-card-heading"><div><span>Clientes</span><h3>Clientes com valores a receber</h3></div><b>{customerTotals.length} pendente(s)</b></div>
@@ -578,8 +638,13 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
         </div>
       </article>
       <div className="analytics-details analytics-details-two">
-        <article><h3>Sabores mais vendidos</h3>{[...flavorMap.entries()].sort((a,b) => b[1].quantity-a[1].quantity).map(([name,value]) => <p key={name}><span>{name}</span><strong>{value.quantity} · {currency(value.revenue)}</strong></p>)}</article>
-        <article><h3>Pedidos por dia</h3>{[...dayMap.entries()].sort((a,b) => b[0].localeCompare(a[0])).map(([day,value]) => <p key={day}><span>{new Date(`${day}T12:00:00`).toLocaleDateString("pt-BR")}</span><strong>{value.orders} pedidos · {value.units} unidades · {currency(value.revenue)}</strong></p>)}</article>
+        <article><h3>Sabores mais vendidos</h3>{flavorRows.map((value) => <div className="analytics-ranking-row" key={value.name}><p><span>{value.name}</span><strong>{value.units} unidades · {currency(value.revenue)}</strong></p><progress max={Math.max(1, flavorRows[0]?.units || 1)} value={value.units} /></div>)}{!flavorRows.length && <Notice>Nenhuma venda encontrada no período.</Notice>}</article>
+        <article><h3>Pedidos por dia</h3>{dayRows.map((value) => <p key={String(value.day)}><span>{new Date(`${String(value.day).slice(0, 10)}T12:00:00`).toLocaleDateString("pt-BR")}</span><strong>{value.orders} pedidos · {value.units} unidades · {currency(value.revenue)}</strong></p>)}{!dayRows.length && <Notice>Nenhum pedido encontrado no período.</Notice>}</article>
+      </div>
+      <div className="analytics-details analytics-details-three">
+        <article><h3>Formas de pagamento</h3>{(serverAnalytics?.payments || []).map((value) => <p key={value.method}><span>{paymentNames[value.method] || value.method.replaceAll("_", " ")}</span><strong>{value.orders} · {currency(value.revenue)}</strong></p>)}{!serverAnalytics?.payments?.length && <Notice>Nenhum pagamento no período.</Notice>}</article>
+        <article><h3>Situação dos pedidos</h3>{(serverAnalytics?.statuses || []).map((value) => <p key={value.status}><span>{statusLabel[value.status] || value.status.replaceAll("_", " ")}</span><strong>{value.orders} pedido(s)</strong></p>)}{!serverAnalytics?.statuses?.length && <Notice>Nenhum pedido no período.</Notice>}</article>
+        <article><h3>Melhores clientes</h3>{(serverAnalytics?.topCustomers || []).slice(0, 8).map((value, index) => <p key={`${value.name}-${index}`}><span>{index + 1}. {value.name}</span><strong>{value.units} unidades · {currency(value.paid)}</strong></p>)}{!serverAnalytics?.topCustomers?.length && <Notice>Nenhum cliente no período.</Notice>}</article>
       </div>
       {paymentConfirmation && createPortal(<div className="payment-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="payment-confirm-title" onClick={(event) => { if (event.target === event.currentTarget && !updatingCustomer) setPaymentConfirmation(null); }}>
         <article className="payment-confirm-card">

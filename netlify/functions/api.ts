@@ -44,7 +44,36 @@ type CheckoutInput = {
 
 let stockMovementsSchemaPromise: Promise<void> | null = null;
 let adminResetSchemaPromise: Promise<void> | null = null;
+let flavorMediaSchemaPromise: Promise<void> | null = null;
 const ADMIN_RECOVERY_EMAIL = "italo-henrique@hotmail.com";
+
+async function ensureFlavorMediaSchema() {
+  if (!flavorMediaSchemaPromise) {
+    flavorMediaSchemaPromise = (async () => {
+      await query(`ALTER TABLE flavors
+        ADD COLUMN IF NOT EXISTS image_data BYTEA,
+        ADD COLUMN IF NOT EXISTS image_mime_type TEXT,
+        ADD COLUMN IF NOT EXISTS image_version BIGINT NOT NULL DEFAULT 0`);
+    })().catch((error) => {
+      flavorMediaSchemaPromise = null;
+      throw error;
+    });
+  }
+  await flavorMediaSchemaPromise;
+}
+
+function flavorColumns(prefix = "") {
+  const p = prefix ? `${prefix}.` : "";
+  return `${p}id,${p}name,${p}price,${p}stock,${p}active,${p}image_url,${p}updated_at`;
+}
+
+function decodeFlavorImage(value: unknown) {
+  const match = String(value || "").match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) throw new HttpError(400, "Escolha uma foto JPG, PNG ou WebP válida.");
+  const data = Buffer.from(match[2], "base64");
+  if (!data.length || data.length > 750_000) throw new HttpError(400, "A foto deve ter no máximo 750 KB após a otimização.");
+  return { mimeType: match[1], data };
+}
 
 async function ensureAdminResetSchema() {
   if (!adminResetSchemaPromise) {
@@ -228,9 +257,10 @@ async function whatsappForOrder(order: Record<string, unknown>) {
 async function handleStore(request: Request) {
   only(request, "GET");
   await autoDeactivateEmptyFlavors();
+  await ensureFlavorMediaSchema();
   const [config, flavors, session] = await Promise.all([
     storeConfig(),
-    query(`SELECT f.*,
+    query(`SELECT ${flavorColumns("f")},
             GREATEST(f.stock - COALESCE(r.quantity,0),0)::INTEGER AS stock
           FROM flavors f
           LEFT JOIN (
@@ -661,9 +691,10 @@ async function handleAdminOverview(request: Request) {
   only(request, "GET");
   await requireAdmin(request);
   await ensureStockMovementsSchema();
+  await ensureFlavorMediaSchema();
   const [config, flavors, orders, loyaltyProgress, counts, loyalty, stockAddedToday] = await Promise.all([
     storeConfig(),
-    query("SELECT * FROM flavors ORDER BY active DESC,name"),
+    query(`SELECT ${flavorColumns()} FROM flavors ORDER BY active DESC,name`),
     query(
       `SELECT o.*,
         COALESCE(JSON_AGG(JSON_BUILD_OBJECT('flavorId',i.flavor_id,'name',i.flavor_name,'price',i.unit_price::FLOAT,'quantity',i.quantity,'total',i.line_total::FLOAT)
@@ -885,16 +916,28 @@ async function handleAdminFlavor(request: Request, flavorId?: number) {
   await requireAdmin(request);
   await autoDeactivateEmptyFlavors();
   await ensureStockMovementsSchema();
+  await ensureFlavorMediaSchema();
   if (request.method === "POST") {
-    const data = await body<{ name: string; price: number; stock?: number; imageUrl?: string; active?: boolean }>(request);
+    const data = await body<{ name: string; price: number; stock?: number; imageUrl?: string; imageDataUrl?: string; active?: boolean }>(request);
     const name = cleanText(data.name, 100);
     if (!name) throw new HttpError(400, "Informe o nome do sabor.");
     const initialStock = Math.max(0, Math.trunc(Number(data.stock || 0)));
+    const uploadedImage = data.imageDataUrl ? decodeFlavorImage(data.imageDataUrl) : null;
     const flavor = await transaction(async (client) => {
       const result = await client.query(
-        "INSERT INTO flavors (name,price,stock,image_url,active) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+        `INSERT INTO flavors (name,price,stock,image_url,active) VALUES ($1,$2,$3,$4,$5) RETURNING ${flavorColumns()}`,
         [name, money(data.price), initialStock, cleanText(data.imageUrl, 300), data.active !== false],
       );
+      if (uploadedImage) {
+        const uploaded = await client.query(
+          `UPDATE flavors
+              SET image_data=$2,image_mime_type=$3,image_version=1,
+                  image_url='/api/flavors/' || id || '/image?v=1',updated_at=NOW()
+            WHERE id=$1 RETURNING ${flavorColumns()}`,
+          [result.rows[0].id, uploadedImage.data, uploadedImage.mimeType],
+        );
+        result.rows[0] = uploaded.rows[0];
+      }
       if (initialStock > 0) await client.query("INSERT INTO stock_movements (flavor_id,quantity) VALUES ($1,$2)", [result.rows[0].id, initialStock]);
       return result.rows[0];
     });
@@ -909,7 +952,7 @@ async function handleAdminFlavor(request: Request, flavorId?: number) {
       const nextStock = data.stock === undefined ? null : Math.max(0, Math.trunc(Number(data.stock)));
       const result = await client.query(
         `UPDATE flavors SET name=COALESCE($2,name),price=COALESCE($3,price),stock=COALESCE($4,stock),
-          image_url=COALESCE($5,image_url),active=COALESCE($6,active),updated_at=NOW() WHERE id=$1 RETURNING *`,
+          image_url=COALESCE($5,image_url),active=COALESCE($6,active),updated_at=NOW() WHERE id=$1 RETURNING ${flavorColumns()}`,
         [
           flavorId, data.name === undefined ? null : cleanText(data.name, 100), data.price === undefined ? null : money(data.price),
           nextStock, data.imageUrl === undefined ? null : cleanText(data.imageUrl, 300), data.active === undefined ? null : Boolean(data.active),
@@ -922,6 +965,39 @@ async function handleAdminFlavor(request: Request, flavorId?: number) {
     return json({ flavor: normalizeFlavor(flavor) });
   }
   throw new HttpError(405, "Método não permitido.");
+}
+
+async function handleFlavorImage(request: Request, flavorId: number, adminUpload = false) {
+  await ensureFlavorMediaSchema();
+  if (adminUpload) {
+    only(request, "POST");
+    await requireAdmin(request);
+    const input = await body<{ dataUrl: string }>(request);
+    const image = decodeFlavorImage(input.dataUrl);
+    const result = await query(
+      `UPDATE flavors
+          SET image_data=$2,image_mime_type=$3,image_version=image_version+1,
+              image_url='/api/flavors/' || id || '/image?v=' || (image_version+1),updated_at=NOW()
+        WHERE id=$1 RETURNING ${flavorColumns()}`,
+      [flavorId, image.data, image.mimeType],
+    );
+    if (!result.rows[0]) throw new HttpError(404, "Sabor não encontrado.");
+    return json({ flavor: normalizeFlavor(result.rows[0]) });
+  }
+  only(request, "GET");
+  const result = await query<{ image_data: Buffer | null; image_mime_type: string | null }>(
+    "SELECT image_data,image_mime_type FROM flavors WHERE id=$1",
+    [flavorId],
+  );
+  const image = result.rows[0];
+  if (!image?.image_data || !image.image_mime_type) throw new HttpError(404, "Foto não encontrada.");
+  return new Response(new Uint8Array(image.image_data), {
+    headers: {
+      "Content-Type": image.image_mime_type,
+      "Cache-Control": "public, max-age=31536000, immutable",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }
 
 async function handleAdminConfig(request: Request) {
@@ -1141,24 +1217,39 @@ async function handleAdminAnalyticsSummary(request: Request) {
   const from = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get("from") || "") ? url.searchParams.get("from") : null;
   const to = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get("to") || "") ? url.searchParams.get("to") : null;
   const registered = url.searchParams.get("registered") === "1";
-  const selectedOrders = `SELECT * FROM orders
+  const payment = ["pago", "aguardando_pagamento", "cancelado", "expirado"].includes(url.searchParams.get("payment") || "") ? url.searchParams.get("payment") : null;
+  const filteredOrders = `SELECT * FROM orders
+    WHERE visible_to_admin=TRUE
+      AND ($1::DATE IS NULL OR (created_at AT TIME ZONE 'America/Sao_Paulo')::DATE >= $1::DATE)
+      AND ($2::DATE IS NULL OR (created_at AT TIME ZONE 'America/Sao_Paulo')::DATE <= $2::DATE)
+      AND ($3::BOOLEAN=FALSE OR customer_id IS NOT NULL)
+      AND ($4::TEXT IS NULL OR payment_status=$4)`;
+  const selectedOrders = `${filteredOrders} AND status<>'cancelado' AND payment_status NOT IN ('cancelado','expirado')`;
+  const debtOrders = `SELECT * FROM orders
     WHERE visible_to_admin=TRUE AND status<>'cancelado' AND payment_status NOT IN ('cancelado','expirado')
       AND ($1::DATE IS NULL OR (created_at AT TIME ZONE 'America/Sao_Paulo')::DATE >= $1::DATE)
       AND ($2::DATE IS NULL OR (created_at AT TIME ZONE 'America/Sao_Paulo')::DATE <= $2::DATE)
       AND ($3::BOOLEAN=FALSE OR customer_id IS NOT NULL)`;
-  const [summary, customers] = await Promise.all([
+  const params = [from, to, registered, payment];
+  const [summary, customers, flavors, days, payments, statuses, topCustomers, stock] = await Promise.all([
     query(
-      `WITH selected AS (${selectedOrders}), item_counts AS (
+      `WITH filtered AS (${filteredOrders}), selected AS (${selectedOrders}), item_counts AS (
          SELECT i.order_id,COALESCE(SUM(i.quantity),0)::INTEGER units FROM order_items i JOIN selected s ON s.id=i.order_id GROUP BY i.order_id
-       ) SELECT COUNT(*)::INTEGER orders,COUNT(*) FILTER (WHERE s.payment_status='pago')::INTEGER paid_orders,COALESCE(SUM(s.total),0)::FLOAT total,
+       ) SELECT COUNT(*)::INTEGER orders,COUNT(*) FILTER (WHERE s.payment_status='pago')::INTEGER paid_orders,
+         COUNT(*) FILTER (WHERE s.payment_status='aguardando_pagamento')::INTEGER pending_orders,
+         (SELECT COUNT(*)::INTEGER FROM filtered WHERE status='cancelado' OR payment_status IN ('cancelado','expirado')) cancelled_orders,
+         COUNT(DISTINCT s.customer_id) FILTER (WHERE s.customer_id IS NOT NULL)::INTEGER registered_buyers,
+         COALESCE(SUM(s.total),0)::FLOAT total,
          COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT paid,
          COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='aguardando_pagamento' AND s.payment_method='pedido_rapido_admin'),0)::FLOAT pending,
-         COALESCE(SUM(i.units) FILTER (WHERE s.payment_status='pago'),0)::INTEGER units
+         COALESCE(SUM(s.delivery_fee) FILTER (WHERE s.payment_status='pago'),0)::FLOAT delivery_revenue,
+         COALESCE(SUM(i.units) FILTER (WHERE s.payment_status='pago'),0)::INTEGER units,
+         COALESCE(AVG(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT average_ticket
        FROM selected s LEFT JOIN item_counts i ON i.order_id=s.id`,
-      [from, to, registered],
+      params,
     ),
     query(
-      `WITH selected AS (${selectedOrders}), item_counts AS (
+      `WITH selected AS (${debtOrders}), item_counts AS (
          SELECT i.order_id,COALESCE(SUM(i.quantity),0)::INTEGER units FROM order_items i JOIN selected s ON s.id=i.order_id GROUP BY i.order_id
        ) SELECT (ARRAY_AGG(s.customer_name ORDER BY s.created_at DESC))[1] name,COUNT(*)::INTEGER orders,
          COALESCE(SUM(i.units),0)::INTEGER units,COALESCE(SUM(s.total),0)::FLOAT total,
@@ -1172,8 +1263,54 @@ async function handleAdminAnalyticsSummary(request: Request) {
         ORDER BY total DESC,name`,
       [from, to, registered],
     ),
+    query(
+      `WITH selected AS (${selectedOrders})
+       SELECT i.flavor_name name,COALESCE(SUM(i.quantity),0)::INTEGER units,
+         COUNT(DISTINCT i.order_id)::INTEGER orders,COALESCE(SUM(i.line_total),0)::FLOAT revenue
+       FROM order_items i JOIN selected s ON s.id=i.order_id
+       WHERE s.payment_status='pago' GROUP BY i.flavor_name ORDER BY units DESC,revenue DESC,name`,
+      params,
+    ),
+    query(
+      `WITH selected AS (${selectedOrders}), item_counts AS (
+         SELECT i.order_id,COALESCE(SUM(i.quantity),0)::INTEGER units FROM order_items i GROUP BY i.order_id
+       ) SELECT (s.created_at AT TIME ZONE 'America/Sao_Paulo')::DATE day,COUNT(*)::INTEGER orders,
+         COUNT(*) FILTER (WHERE s.payment_status='pago')::INTEGER paid_orders,
+         COALESCE(SUM(i.units) FILTER (WHERE s.payment_status='pago'),0)::INTEGER units,
+         COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT revenue
+       FROM selected s LEFT JOIN item_counts i ON i.order_id=s.id GROUP BY day ORDER BY day DESC`,
+      params,
+    ),
+    query(
+      `WITH selected AS (${selectedOrders})
+       SELECT COALESCE(NULLIF(payment_method,''),'não informado') method,COUNT(*)::INTEGER orders,
+         COALESCE(SUM(total),0)::FLOAT revenue
+       FROM selected WHERE payment_status='pago' GROUP BY method ORDER BY revenue DESC,orders DESC`,
+      params,
+    ),
+    query(
+      `WITH filtered AS (${filteredOrders}) SELECT status,COUNT(*)::INTEGER orders
+       FROM filtered GROUP BY status ORDER BY orders DESC,status`,
+      params,
+    ),
+    query(
+      `WITH selected AS (${selectedOrders}), item_counts AS (
+         SELECT i.order_id,COALESCE(SUM(i.quantity),0)::INTEGER units FROM order_items i GROUP BY i.order_id
+       ) SELECT (ARRAY_AGG(s.customer_name ORDER BY s.created_at DESC))[1] name,COUNT(*)::INTEGER orders,
+         COALESCE(SUM(i.units),0)::INTEGER units,COALESCE(SUM(s.total),0)::FLOAT paid,MAX(s.created_at) last_order
+       FROM selected s LEFT JOIN item_counts i ON i.order_id=s.id WHERE s.payment_status='pago'
+       GROUP BY LOWER(REGEXP_REPLACE(TRIM(s.customer_name),'[[:space:]]+',' ','g'))
+       ORDER BY paid DESC,orders DESC LIMIT 10`,
+      params,
+    ),
+    query(
+      `SELECT COALESCE(SUM(stock),0)::INTEGER total_units,COUNT(*) FILTER (WHERE active=TRUE)::INTEGER active_flavors,
+         COUNT(*) FILTER (WHERE active=TRUE AND stock BETWEEN 1 AND 3)::INTEGER low_stock,
+         COUNT(*) FILTER (WHERE active=TRUE AND stock=0)::INTEGER out_of_stock
+       FROM flavors`,
+    ),
   ]);
-  return json({ summary: summary.rows[0], customers: customers.rows });
+  return json({ summary: summary.rows[0], customers: customers.rows, flavors: flavors.rows, days: days.rows, payments: payments.rows, statuses: statuses.rows, topCustomers: topCustomers.rows, stock: stock.rows[0] });
 }
 
 async function handleAdminOrdersMarkPaid(request: Request) {
@@ -1260,12 +1397,16 @@ async function route(request: Request) {
 
   let match = path.match(/^\/cep\/(\d{8})$/);
   if (match) return handleCep(request, match[1]);
+  match = path.match(/^\/flavors\/(\d+)\/image$/);
+  if (match) return handleFlavorImage(request, Number(match[1]));
   match = path.match(/^\/orders\/(\d+)$/);
   if (match) return handleOrderStatus(request, Number(match[1]));
   match = path.match(/^\/orders\/(\d+)\/cancel$/);
   if (match) return handleCancelOrder(request, Number(match[1]));
   match = path.match(/^\/admin\/orders\/(\d+)$/);
   if (match) return handleAdminOrderUpdate(request, Number(match[1]));
+  match = path.match(/^\/admin\/flavors\/(\d+)\/image$/);
+  if (match) return handleFlavorImage(request, Number(match[1]), true);
   match = path.match(/^\/admin\/flavors\/(\d+)$/);
   if (match) return handleAdminFlavor(request, Number(match[1]));
   match = path.match(/^\/admin\/customers\/(\d+)$/);
