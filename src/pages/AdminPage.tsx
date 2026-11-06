@@ -433,7 +433,13 @@ function FlavorEditor({ flavor, onSave, onDelete }: { flavor: Flavor; onSave: (f
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  return <article className="flavor-editor" id={`sabor-${value.id}`}>
+  const [deleteConfirmation, setDeleteConfirmation] = useState(false);
+  async function deleteFlavor() {
+    setDeleting(true); setMessage(""); setError("");
+    try { await remove(`/admin/flavors/${value.id}`); setDeleteConfirmation(false); onDelete(value.id); }
+    catch (reason) { setError(actionError(reason, "Não foi possível excluir o sabor.")); setDeleting(false); }
+  }
+  return <><article className="flavor-editor" id={`sabor-${value.id}`}>
     <label className="flavor-photo-picker editor-photo-picker">
       <img src={imageDataUrl || value.imageUrl} alt={value.name} width="64" height="64" />
       <span>Trocar foto</span>
@@ -445,10 +451,20 @@ function FlavorEditor({ flavor, onSave, onDelete }: { flavor: Flavor; onSave: (f
     <label className="switch-line"><input type="checkbox" checked={value.active} onChange={(e) => setValue({ ...value, active: e.target.checked })} />Ativo</label>
     <div className="flavor-editor-actions">
       <button type="button" className="primary-button" disabled={saving || deleting} onClick={async () => { setSaving(true); setMessage(""); setError(""); try { let result = await patch<{ flavor: Flavor }>(`/admin/flavors/${value.id}`, value); if (imageDataUrl) result = await post<{ flavor: Flavor }>(`/admin/flavors/${value.id}/image`, { dataUrl: imageDataUrl }); setValue(result.flavor); setImageDataUrl(""); onSave(result.flavor); setMessage("Sabor e foto salvos."); } catch (reason) { setError(actionError(reason, "Não foi possível salvar.")); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar"}</button>
-      <button type="button" className="danger-button" disabled={saving || deleting} onClick={async () => { if (!confirm(`Excluir o sabor ${value.name}? Essa ação não pode ser desfeita.`)) return; setDeleting(true); setMessage(""); setError(""); try { await remove(`/admin/flavors/${value.id}`); onDelete(value.id); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o sabor.")); setDeleting(false); } }}>{deleting ? "Excluindo..." : "Excluir"}</button>
+      <button type="button" className="danger-button" disabled={saving || deleting} onClick={() => { setError(""); setDeleteConfirmation(true); }}>Excluir</button>
     </div>
     {(message || error) && <small className={error ? "action-error editor-feedback" : "action-success editor-feedback"}>{error || message}</small>}
-  </article>;
+  </article>{deleteConfirmation && createPortal(<div className="payment-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby={`delete-flavor-${value.id}`} onClick={(event) => { if (event.target === event.currentTarget && !deleting) setDeleteConfirmation(false); }}>
+    <article className="payment-confirm-card flavor-delete-confirm-card">
+      <div className="payment-confirm-icon flavor-delete-confirm-icon">×</div>
+      <span>Excluir sabor</span>
+      <h3 id={`delete-flavor-${value.id}`}>Excluir {value.name}?</h3>
+      <p>O sabor será removido do gerenciamento e não aparecerá mais na loja.</p>
+      <small>O histórico dos pedidos anteriores continuará preservado.</small>
+      {error && <Notice kind="error">{error}</Notice>}
+      <div className="payment-confirm-actions"><button type="button" className="ghost-button" disabled={deleting} onClick={() => setDeleteConfirmation(false)}>Manter sabor</button><button type="button" className="danger-button" disabled={deleting} onClick={() => void deleteFlavor()}>{deleting ? "Excluindo..." : "Sim, excluir"}</button></div>
+    </article>
+  </div>, document.body)}</>;
 }
 
 function ConfigManager({ config, onChange, notificationsEnabled, onNotificationsChange, onEnableNotifications }: { config: StoreConfig; onChange: (config: StoreConfig) => void; notificationsEnabled: boolean; onNotificationsChange: (enabled: boolean) => void; onEnableNotifications: () => Promise<void> | void }) {
