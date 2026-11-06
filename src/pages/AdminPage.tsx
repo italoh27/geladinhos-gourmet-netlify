@@ -422,16 +422,17 @@ function FlavorManager({ flavors, onChange }: { flavors: Flavor[]; onChange: (fl
       </label>
       <button className="primary-button" disabled={creating}>{creating ? "Adicionando..." : "Adicionar sabor"}</button>
     </form>
-    <div className="flavor-manager-list">{flavors.map((flavor) => <FlavorEditor key={flavor.id} flavor={flavor} onSave={(next) => onChange(flavors.map((item) => item.id === next.id ? next : item))} />)}</div>
+    <div className="flavor-manager-list">{flavors.map((flavor) => <FlavorEditor key={flavor.id} flavor={flavor} onSave={(next) => onChange(flavors.map((item) => item.id === next.id ? next : item))} onDelete={(id) => { onChange(flavors.filter((item) => item.id !== id)); setMessage(`${flavor.name} foi excluído.`); }} />)}</div>
   </section>;
 }
 
-function FlavorEditor({ flavor, onSave }: { flavor: Flavor; onSave: (flavor: Flavor) => void }) {
+function FlavorEditor({ flavor, onSave, onDelete }: { flavor: Flavor; onSave: (flavor: Flavor) => void; onDelete: (id: number) => void }) {
   const [value, setValue] = useState(flavor);
   const [imageDataUrl, setImageDataUrl] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   return <article className="flavor-editor" id={`sabor-${value.id}`}>
     <label className="flavor-photo-picker editor-photo-picker">
       <img src={imageDataUrl || value.imageUrl} alt={value.name} width="64" height="64" />
@@ -442,7 +443,10 @@ function FlavorEditor({ flavor, onSave }: { flavor: Flavor; onSave: (flavor: Fla
     <label className="number-selector"><span>Preço</span><QuantityControl value={value.price} min={0} max={999} step={0.5} formatValue={currency} label={`Preço de ${value.name}`} onChange={(price) => setValue({ ...value, price })} /></label>
     <label className="number-selector"><span>Estoque</span><QuantityControl value={value.stock} min={0} max={9999} label={`Estoque de ${value.name}`} onChange={(stock) => setValue({ ...value, stock })} /></label>
     <label className="switch-line"><input type="checkbox" checked={value.active} onChange={(e) => setValue({ ...value, active: e.target.checked })} />Ativo</label>
-    <button type="button" className="primary-button" disabled={saving} onClick={async () => { setSaving(true); setMessage(""); setError(""); try { let result = await patch<{ flavor: Flavor }>(`/admin/flavors/${value.id}`, value); if (imageDataUrl) result = await post<{ flavor: Flavor }>(`/admin/flavors/${value.id}/image`, { dataUrl: imageDataUrl }); setValue(result.flavor); setImageDataUrl(""); onSave(result.flavor); setMessage("Sabor e foto salvos."); } catch (reason) { setError(actionError(reason, "Não foi possível salvar.")); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar"}</button>
+    <div className="flavor-editor-actions">
+      <button type="button" className="primary-button" disabled={saving || deleting} onClick={async () => { setSaving(true); setMessage(""); setError(""); try { let result = await patch<{ flavor: Flavor }>(`/admin/flavors/${value.id}`, value); if (imageDataUrl) result = await post<{ flavor: Flavor }>(`/admin/flavors/${value.id}/image`, { dataUrl: imageDataUrl }); setValue(result.flavor); setImageDataUrl(""); onSave(result.flavor); setMessage("Sabor e foto salvos."); } catch (reason) { setError(actionError(reason, "Não foi possível salvar.")); } finally { setSaving(false); } }}>{saving ? "Salvando..." : "Salvar"}</button>
+      <button type="button" className="danger-button" disabled={saving || deleting} onClick={async () => { if (!confirm(`Excluir o sabor ${value.name}? Essa ação não pode ser desfeita.`)) return; setDeleting(true); setMessage(""); setError(""); try { await remove(`/admin/flavors/${value.id}`); onDelete(value.id); } catch (reason) { setError(actionError(reason, "Não foi possível excluir o sabor.")); setDeleting(false); } }}>{deleting ? "Excluindo..." : "Excluir"}</button>
+    </div>
     {(message || error) && <small className={error ? "action-error editor-feedback" : "action-success editor-feedback"}>{error || message}</small>}
   </article>;
 }
@@ -561,7 +565,7 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
   useEffect(() => {
     const params = new URLSearchParams({ ...(filters.from ? { from: filters.from } : {}), ...(filters.to ? { to: filters.to } : {}), ...(filters.payment ? { payment: filters.payment } : {}), ...(filters.registered ? { registered: "1" } : {}) });
     let active = true;
-    api<AnalyticsSummary>(`/admin/analytics/summary${params.size ? `?${params}` : ""}`).then((result) => { if (active) setServerAnalytics(result); }).catch((reason) => { if (active) setError(actionError(reason, "Não foi possível atualizar os totais.")); });
+    api<AnalyticsSummary>(`/admin/analytics/summary${params.size ? `?${params}` : ""}`).then((result) => { if (active) { setServerAnalytics(result); setError(""); } }).catch((reason) => { if (active) setError(actionError(reason, "Não foi possível atualizar os totais.")); });
     return () => { active = false; };
   }, [filters.from, filters.to, filters.payment, filters.registered, ordersRevision]);
   for (const order of filtered) {

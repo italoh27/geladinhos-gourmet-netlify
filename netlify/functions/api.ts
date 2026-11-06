@@ -944,6 +944,11 @@ async function handleAdminFlavor(request: Request, flavorId?: number) {
     return json({ flavor: normalizeFlavor(flavor) }, { status: 201 });
   }
   if (!flavorId) throw new HttpError(400, "Sabor inválido.");
+  if (request.method === "DELETE") {
+    const removed = await query<{ id: number }>("DELETE FROM flavors WHERE id=$1 RETURNING id", [flavorId]);
+    if (!removed.rows[0]) throw new HttpError(404, "Sabor não encontrado.");
+    return noContent();
+  }
   if (request.method === "PATCH") {
     const data = await body<{ name?: string; price?: number; stock?: number; imageUrl?: string; active?: boolean }>(request);
     const flavor = await transaction(async (client) => {
@@ -1231,13 +1236,16 @@ async function handleAdminAnalyticsSummary(request: Request) {
       AND ($2::DATE IS NULL OR (created_at AT TIME ZONE 'America/Sao_Paulo')::DATE <= $2::DATE)
       AND ($3::BOOLEAN=FALSE OR customer_id IS NOT NULL)`;
   const params = [from, to, registered, payment];
-  const [summary, customers, flavors, days, payments, statuses, topCustomers, stock] = await Promise.all([
-    query(
-      `WITH filtered AS (${filteredOrders}), selected AS (${selectedOrders}), item_counts AS (
+  const safeAnalyticsQuery = <T extends Record<string, unknown>>(label: string, promise: Promise<{ rows: T[]; rowCount: number | null }>) => promise.catch((error) => {
+    console.error(`analytics_${label}`, error);
+    return { rows: [] as T[], rowCount: 0 };
+  });
+  const [summary, customers, cancelled, flavors, days, payments, statuses, topCustomers, stock] = await Promise.all([
+    safeAnalyticsQuery("summary", query(
+      `WITH selected AS (${selectedOrders}), item_counts AS (
          SELECT i.order_id,COALESCE(SUM(i.quantity),0)::INTEGER units FROM order_items i JOIN selected s ON s.id=i.order_id GROUP BY i.order_id
        ) SELECT COUNT(*)::INTEGER orders,COUNT(*) FILTER (WHERE s.payment_status='pago')::INTEGER paid_orders,
          COUNT(*) FILTER (WHERE s.payment_status='aguardando_pagamento')::INTEGER pending_orders,
-         (SELECT COUNT(*)::INTEGER FROM filtered WHERE status='cancelado' OR payment_status IN ('cancelado','expirado')) cancelled_orders,
          COUNT(DISTINCT s.customer_id) FILTER (WHERE s.customer_id IS NOT NULL)::INTEGER registered_buyers,
          COALESCE(SUM(s.total),0)::FLOAT total,
          COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT paid,
@@ -1247,8 +1255,8 @@ async function handleAdminAnalyticsSummary(request: Request) {
          COALESCE(AVG(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT average_ticket
        FROM selected s LEFT JOIN item_counts i ON i.order_id=s.id`,
       params,
-    ),
-    query(
+    )),
+    safeAnalyticsQuery("debts", query(
       `WITH selected AS (${debtOrders}), item_counts AS (
          SELECT i.order_id,COALESCE(SUM(i.quantity),0)::INTEGER units FROM order_items i JOIN selected s ON s.id=i.order_id GROUP BY i.order_id
        ) SELECT (ARRAY_AGG(s.customer_name ORDER BY s.created_at DESC))[1] name,COUNT(*)::INTEGER orders,
@@ -1262,16 +1270,22 @@ async function handleAdminAnalyticsSummary(request: Request) {
         HAVING COUNT(*) FILTER (WHERE s.payment_status='aguardando_pagamento' AND s.payment_method='pedido_rapido_admin') > 0
         ORDER BY total DESC,name`,
       [from, to, registered],
-    ),
-    query(
+    )),
+    safeAnalyticsQuery("cancelled", query<{ cancelled_orders: number }>(
+      `WITH filtered AS (${filteredOrders})
+       SELECT COUNT(*)::INTEGER cancelled_orders FROM filtered
+       WHERE status='cancelado' OR payment_status IN ('cancelado','expirado')`,
+      params,
+    )),
+    safeAnalyticsQuery("flavors", query(
       `WITH selected AS (${selectedOrders})
        SELECT i.flavor_name name,COALESCE(SUM(i.quantity),0)::INTEGER units,
          COUNT(DISTINCT i.order_id)::INTEGER orders,COALESCE(SUM(i.line_total),0)::FLOAT revenue
        FROM order_items i JOIN selected s ON s.id=i.order_id
        WHERE s.payment_status='pago' GROUP BY i.flavor_name ORDER BY units DESC,revenue DESC,name`,
       params,
-    ),
-    query(
+    )),
+    safeAnalyticsQuery("days", query(
       `WITH selected AS (${selectedOrders}), item_counts AS (
          SELECT i.order_id,COALESCE(SUM(i.quantity),0)::INTEGER units FROM order_items i GROUP BY i.order_id
        ) SELECT (s.created_at AT TIME ZONE 'America/Sao_Paulo')::DATE day,COUNT(*)::INTEGER orders,
@@ -1280,20 +1294,20 @@ async function handleAdminAnalyticsSummary(request: Request) {
          COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT revenue
        FROM selected s LEFT JOIN item_counts i ON i.order_id=s.id GROUP BY day ORDER BY day DESC`,
       params,
-    ),
-    query(
+    )),
+    safeAnalyticsQuery("payments", query(
       `WITH selected AS (${selectedOrders})
        SELECT COALESCE(NULLIF(payment_method,''),'não informado') method,COUNT(*)::INTEGER orders,
          COALESCE(SUM(total),0)::FLOAT revenue
        FROM selected WHERE payment_status='pago' GROUP BY method ORDER BY revenue DESC,orders DESC`,
       params,
-    ),
-    query(
+    )),
+    safeAnalyticsQuery("statuses", query(
       `WITH filtered AS (${filteredOrders}) SELECT status,COUNT(*)::INTEGER orders
        FROM filtered GROUP BY status ORDER BY orders DESC,status`,
       params,
-    ),
-    query(
+    )),
+    safeAnalyticsQuery("customers", query(
       `WITH selected AS (${selectedOrders}), item_counts AS (
          SELECT i.order_id,COALESCE(SUM(i.quantity),0)::INTEGER units FROM order_items i GROUP BY i.order_id
        ) SELECT (ARRAY_AGG(s.customer_name ORDER BY s.created_at DESC))[1] name,COUNT(*)::INTEGER orders,
@@ -1302,15 +1316,15 @@ async function handleAdminAnalyticsSummary(request: Request) {
        GROUP BY LOWER(REGEXP_REPLACE(TRIM(s.customer_name),'[[:space:]]+',' ','g'))
        ORDER BY paid DESC,orders DESC LIMIT 10`,
       params,
-    ),
-    query(
+    )),
+    safeAnalyticsQuery("stock", query(
       `SELECT COALESCE(SUM(stock),0)::INTEGER total_units,COUNT(*) FILTER (WHERE active=TRUE)::INTEGER active_flavors,
          COUNT(*) FILTER (WHERE active=TRUE AND stock BETWEEN 1 AND 3)::INTEGER low_stock,
          COUNT(*) FILTER (WHERE active=TRUE AND stock=0)::INTEGER out_of_stock
        FROM flavors`,
-    ),
+    )),
   ]);
-  return json({ summary: summary.rows[0], customers: customers.rows, flavors: flavors.rows, days: days.rows, payments: payments.rows, statuses: statuses.rows, topCustomers: topCustomers.rows, stock: stock.rows[0] });
+  return json({ summary: { ...summary.rows[0], cancelled_orders: Number(cancelled.rows[0]?.cancelled_orders || 0) }, customers: customers.rows, flavors: flavors.rows, days: days.rows, payments: payments.rows, statuses: statuses.rows, topCustomers: topCustomers.rows, stock: stock.rows[0] || { total_units: 0, active_flavors: 0, low_stock: 0, out_of_stock: 0 } });
 }
 
 async function handleAdminOrdersMarkPaid(request: Request) {
