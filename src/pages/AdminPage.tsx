@@ -595,6 +595,8 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
   }
   const flavorRows = serverAnalytics?.flavors || [...flavorMap.entries()].map(([name, value]) => ({ name, units: value.quantity, orders: 0, revenue: value.revenue })).sort((a, b) => b.units - a.units);
   const dayRows = serverAnalytics?.days || [...dayMap.entries()].map(([day, value]) => ({ day, orders: value.orders, paid_orders: 0, units: value.units, revenue: value.revenue })).sort((a, b) => b.day.localeCompare(a.day));
+  const dailyDate = filters.to || filters.from || todayISO();
+  const dailySummary = dayRows.find((value) => String(value.day).slice(0, 10) === dailyDate) || { day: dailyDate, orders: 0, paid_orders: 0, units: 0, revenue: 0 };
   async function markCustomerPaid(customer: AnalyticsCustomerTotal) {
     const key = customerKey(customer.name);
     if (!customer.pendingOrderIds.length) return;
@@ -628,6 +630,12 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
         <button type="button" className="ghost-button analytics-clear-button" onClick={() => setFilters({ from: "", to: "", payment: "", registered: false })}>Limpar data</button>
         <a className="success-button" href={`/api/admin/export.csv${exportQuery ? `?${exportQuery}` : ""}`}>Exportar para Excel</a>
       </div>
+      <article className="analytics-daily-summary">
+        <div className="analytics-daily-heading"><span>Resumo do dia</span><strong>{new Date(`${dailyDate}T12:00:00`).toLocaleDateString("pt-BR")}</strong></div>
+        <div><span>Pedidos</span><strong>{dailySummary.orders}</strong><small>{dailySummary.paid_orders} pago(s)</small></div>
+        <div><span>Unidades vendidas</span><strong>{dailySummary.units}</strong><small>Geladinhos pagos</small></div>
+        <div className="daily-revenue"><span>Faturamento do dia</span><strong>{currency(dailySummary.revenue)}</strong><small>Valor recebido</small></div>
+      </article>
       <div className="analytics-grid">
         <article className="analytics-kpi"><span>Pedidos no período</span><strong>{orderCount}</strong><small>Sem cancelados</small></article>
         <article className="analytics-kpi total"><span>Valor total</span><strong>{currency(grossTotal)}</strong><small>Sem cancelados</small></article>
