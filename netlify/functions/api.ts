@@ -1291,7 +1291,8 @@ async function handleAdminAnalyticsSummary(request: Request) {
        ) SELECT (s.created_at AT TIME ZONE 'America/Sao_Paulo')::DATE day,COUNT(*)::INTEGER orders,
          COUNT(*) FILTER (WHERE s.payment_status='pago')::INTEGER paid_orders,
          COALESCE(SUM(i.units) FILTER (WHERE s.payment_status='pago'),0)::INTEGER units,
-         COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT revenue
+         COALESCE(SUM(s.total) FILTER (WHERE s.payment_status='pago'),0)::FLOAT revenue,
+         COALESCE(SUM(s.total),0)::FLOAT total
        FROM selected s LEFT JOIN item_counts i ON i.order_id=s.id GROUP BY day ORDER BY day DESC`,
       params,
     )),

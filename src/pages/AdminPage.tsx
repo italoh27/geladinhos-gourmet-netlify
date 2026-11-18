@@ -17,7 +17,7 @@ type AnalyticsSummary = {
   summary: { orders: number; paid_orders: number; pending_orders: number; cancelled_orders: number; registered_buyers: number; total: number; paid: number; pending: number; delivery_revenue: number; units: number; average_ticket: number };
   customers: Array<{ name: string; orders: number; units: number; total: number; paid: number; pending: number; last_order: string; pending_order_ids: number[] }>;
   flavors: Array<{ name: string; units: number; orders: number; revenue: number }>;
-  days: Array<{ day: string; orders: number; paid_orders: number; units: number; revenue: number }>;
+  days: Array<{ day: string; orders: number; paid_orders: number; units: number; revenue: number; total: number }>;
   payments: Array<{ method: string; orders: number; revenue: number }>;
   statuses: Array<{ status: string; orders: number }>;
   topCustomers: Array<{ name: string; orders: number; units: number; paid: number; last_order: string }>;
@@ -537,7 +537,7 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
   const localOutstanding = validPeriodOrders.filter((order) => order.paymentStatus === "aguardando_pagamento").reduce((sum, order) => sum + order.total, 0);
   const localGrossTotal = validPeriodOrders.reduce((sum, order) => sum + order.total, 0);
   const flavorMap = new Map<string, { quantity: number; revenue: number }>();
-  const dayMap = new Map<string, { orders: number; units: number; revenue: number }>();
+  const dayMap = new Map<string, { orders: number; units: number; revenue: number; total: number; paidOrders: number }>();
   const customerMap = new Map<string, AnalyticsCustomerTotal>();
   const customerKey = (name: string) => name.normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().replace(/\s+/g, " ").toLocaleLowerCase("pt-BR");
   for (const order of validPeriodOrders) {
@@ -585,18 +585,25 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
     return () => { active = false; };
   }, [filters.from, filters.to, filters.payment, filters.registered, ordersRevision]);
   for (const order of filtered) {
+    if (order.status === "cancelado" || ["cancelado", "expirado"].includes(order.paymentStatus)) continue;
     const day = order.createdAt.slice(0, 10);
-    const currentDay = dayMap.get(day) || { orders: 0, units: 0, revenue: 0 };
-    currentDay.orders += 1; currentDay.units += order.items.reduce((sum, item) => sum + item.quantity, 0); currentDay.revenue += order.total; dayMap.set(day, currentDay);
-    if (order.paymentStatus === "pago") for (const item of order.items) {
-      const current = flavorMap.get(item.name) || { quantity: 0, revenue: 0 };
-      current.quantity += item.quantity; current.revenue += item.total; flavorMap.set(item.name, current);
+    const currentDay = dayMap.get(day) || { orders: 0, units: 0, revenue: 0, total: 0, paidOrders: 0 };
+    currentDay.orders += 1; currentDay.total += order.total;
+    if (order.paymentStatus === "pago") {
+      currentDay.paidOrders += 1;
+      currentDay.units += order.items.reduce((sum, item) => sum + item.quantity, 0);
+      currentDay.revenue += order.total;
+      for (const item of order.items) {
+        const current = flavorMap.get(item.name) || { quantity: 0, revenue: 0 };
+        current.quantity += item.quantity; current.revenue += item.total; flavorMap.set(item.name, current);
+      }
     }
+    dayMap.set(day, currentDay);
   }
   const flavorRows = serverAnalytics?.flavors || [...flavorMap.entries()].map(([name, value]) => ({ name, units: value.quantity, orders: 0, revenue: value.revenue })).sort((a, b) => b.units - a.units);
-  const dayRows = serverAnalytics?.days || [...dayMap.entries()].map(([day, value]) => ({ day, orders: value.orders, paid_orders: 0, units: value.units, revenue: value.revenue })).sort((a, b) => b.day.localeCompare(a.day));
+  const dayRows = serverAnalytics?.days || [...dayMap.entries()].map(([day, value]) => ({ day, orders: value.orders, paid_orders: value.paidOrders, units: value.units, revenue: value.revenue, total: value.total })).sort((a, b) => b.day.localeCompare(a.day));
   const dailyDate = filters.to || filters.from || todayISO();
-  const dailySummary = dayRows.find((value) => String(value.day).slice(0, 10) === dailyDate) || { day: dailyDate, orders: 0, paid_orders: 0, units: 0, revenue: 0 };
+  const dailySummary = dayRows.find((value) => String(value.day).slice(0, 10) === dailyDate) || { day: dailyDate, orders: 0, paid_orders: 0, units: 0, revenue: 0, total: 0 };
   async function markCustomerPaid(customer: AnalyticsCustomerTotal) {
     const key = customerKey(customer.name);
     if (!customer.pendingOrderIds.length) return;
@@ -634,6 +641,7 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
         <div className="analytics-daily-heading"><span>Resumo do dia</span><strong>{new Date(`${dailyDate}T12:00:00`).toLocaleDateString("pt-BR")}</strong></div>
         <div><span>Pedidos</span><strong>{dailySummary.orders}</strong><small>{dailySummary.paid_orders} pago(s)</small></div>
         <div><span>Unidades vendidas</span><strong>{dailySummary.units}</strong><small>Geladinhos pagos</small></div>
+        <div className="daily-total"><span>Total dos pedidos</span><strong>{currency(dailySummary.total)}</strong><small>Pagos e não pagos</small></div>
         <div className="daily-revenue"><span>Faturamento do dia</span><strong>{currency(dailySummary.revenue)}</strong><small>Valor recebido</small></div>
       </article>
       <div className="analytics-grid">
