@@ -586,7 +586,7 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
   }, [filters.from, filters.to, filters.payment, filters.registered, ordersRevision]);
   for (const order of filtered) {
     if (order.status === "cancelado" || ["cancelado", "expirado"].includes(order.paymentStatus)) continue;
-    const day = order.createdAt.slice(0, 10);
+    const day = dateInputValue(order.createdAt);
     const currentDay = dayMap.get(day) || { orders: 0, units: 0, revenue: 0, total: 0, paidOrders: 0 };
     currentDay.orders += 1; currentDay.total += order.total;
     if (order.paymentStatus === "pago") {
@@ -600,10 +600,25 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
     }
     dayMap.set(day, currentDay);
   }
-  const flavorRows = serverAnalytics?.flavors || [...flavorMap.entries()].map(([name, value]) => ({ name, units: value.quantity, orders: 0, revenue: value.revenue })).sort((a, b) => b.units - a.units);
-  const dayRows = serverAnalytics?.days || [...dayMap.entries()].map(([day, value]) => ({ day, orders: value.orders, paid_orders: value.paidOrders, units: value.units, revenue: value.revenue, total: value.total })).sort((a, b) => b.day.localeCompare(a.day));
+  const flavorRows = serverAnalytics?.flavors?.length ? serverAnalytics.flavors : [...flavorMap.entries()].map(([name, value]) => ({ name, units: value.quantity, orders: 0, revenue: value.revenue })).sort((a, b) => b.units - a.units);
+  const localDayRows = [...dayMap.entries()].map(([day, value]) => ({ day, orders: value.orders, paid_orders: value.paidOrders, units: value.units, revenue: value.revenue, total: value.total })).sort((a, b) => b.day.localeCompare(a.day));
+  const dayRows = serverAnalytics?.days?.length ? serverAnalytics.days : localDayRows;
   const dailyDate = filters.to || filters.from || todayISO();
-  const dailySummary = dayRows.find((value) => String(value.day).slice(0, 10) === dailyDate) || { day: dailyDate, orders: 0, paid_orders: 0, units: 0, revenue: 0, total: 0 };
+  const serverDailySummary = dayRows.find((value) => {
+    const date = String(value.day);
+    return (date.match(/\d{4}-\d{2}-\d{2}/)?.[0] || dateInputValue(date)) === dailyDate;
+  });
+  const localDailyOrders = filtered.filter((order) => dateInputValue(order.createdAt) === dailyDate && order.status !== "cancelado" && !["cancelado", "expirado"].includes(order.paymentStatus));
+  const localDailyPaid = localDailyOrders.filter((order) => order.paymentStatus === "pago");
+  const localDailySummary = {
+    day: dailyDate,
+    orders: localDailyOrders.length,
+    paid_orders: localDailyPaid.length,
+    units: localDailyPaid.reduce((sum, order) => sum + order.items.reduce((itemSum, item) => itemSum + item.quantity, 0), 0),
+    revenue: localDailyPaid.reduce((sum, order) => sum + order.total, 0),
+    total: localDailyOrders.reduce((sum, order) => sum + order.total, 0),
+  };
+  const dailySummary = serverDailySummary || localDailySummary;
   async function markCustomerPaid(customer: AnalyticsCustomerTotal) {
     const key = customerKey(customer.name);
     if (!customer.pendingOrderIds.length) return;
