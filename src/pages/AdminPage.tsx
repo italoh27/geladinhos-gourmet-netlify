@@ -588,10 +588,9 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
     if (order.status === "cancelado" || ["cancelado", "expirado"].includes(order.paymentStatus)) continue;
     const day = dateInputValue(order.createdAt);
     const currentDay = dayMap.get(day) || { orders: 0, units: 0, revenue: 0, total: 0, paidOrders: 0 };
-    currentDay.orders += 1; currentDay.total += order.total;
+    currentDay.orders += 1; currentDay.total += order.total; currentDay.units += order.items.reduce((sum, item) => sum + item.quantity, 0);
     if (order.paymentStatus === "pago") {
       currentDay.paidOrders += 1;
-      currentDay.units += order.items.reduce((sum, item) => sum + item.quantity, 0);
       currentDay.revenue += order.total;
       for (const item of order.items) {
         const current = flavorMap.get(item.name) || { quantity: 0, revenue: 0 };
@@ -614,7 +613,7 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
     day: dailyDate,
     orders: localDailyOrders.length,
     paid_orders: localDailyPaid.length,
-    units: localDailyPaid.reduce((sum, order) => sum + order.items.reduce((itemSum, item) => itemSum + item.quantity, 0), 0),
+    units: localDailyOrders.reduce((sum, order) => sum + order.items.reduce((itemSum, item) => itemSum + item.quantity, 0), 0),
     revenue: localDailyPaid.reduce((sum, order) => sum + order.total, 0),
     total: localDailyOrders.reduce((sum, order) => sum + order.total, 0),
   };
@@ -655,7 +654,7 @@ function Analytics({ metrics, orders, onOrderUpdated }: { metrics: Metrics; orde
       <article className="analytics-daily-summary">
         <div className="analytics-daily-heading"><span>Resumo do dia</span><strong>{new Date(`${dailyDate}T12:00:00`).toLocaleDateString("pt-BR")}</strong></div>
         <div><span>Pedidos</span><strong>{dailySummary.orders}</strong><small>{dailySummary.paid_orders} pago(s)</small></div>
-        <div><span>Unidades vendidas</span><strong>{dailySummary.units}</strong><small>Geladinhos pagos</small></div>
+        <div><span>Unidades vendidas</span><strong>{dailySummary.units}</strong><small>Pagas e não pagas</small></div>
         <div className="daily-total"><span>Total dos pedidos</span><strong>{currency(dailySummary.total)}</strong><small>Pagos e não pagos</small></div>
         <div className="daily-revenue"><span>Faturamento do dia</span><strong>{currency(dailySummary.revenue)}</strong><small>Valor recebido</small></div>
       </article>
